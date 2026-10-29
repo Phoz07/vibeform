@@ -10,6 +10,10 @@ import {
 	validateFieldConfig,
 } from "../schema/field";
 import { VibeTokensSchema } from "../schema/vibe";
+import {
+	type AttachmentTokenPayload,
+	verifyAttachmentToken,
+} from "../utils/attachment";
 import { generateSlug } from "../utils/slug";
 
 async function getPublishedForm(ctx: Context, slug: string) {
@@ -73,9 +77,7 @@ export const formRouter = router({
 				});
 			}
 
-			const { responsesSchema } = await import(
-				"@vibeform/db"
-			);
+			const { responsesSchema } = await import("@vibeform/db");
 			const { form, fields } = await getPublishedForm(ctx, input.slug);
 			const fieldById = new Map(fields.map((field) => [field.id, field]));
 			const submittedFieldIds = new Set<string>();
@@ -119,19 +121,78 @@ export const formRouter = router({
 			}
 
 			const responseId = crypto.randomUUID();
+			const attachmentPayloads = new Map<string, AttachmentTokenPayload>();
+			const attachmentIdsByField = new Map<string, string>();
+			for (const answer of input.answers) {
+				const field = fieldById.get(answer.fieldId);
+				if (field?.type !== "file_upload") continue;
+				if (
+					typeof answer.value !== "object" ||
+					answer.value === null ||
+					Array.isArray(answer.value) ||
+					typeof (answer.value as { token?: unknown }).token !== "string" ||
+					!ctx.attachmentSecret
+				) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Invalid attachment.",
+					});
+				}
+				const payload = await verifyAttachmentToken(
+					(answer.value as { token: string }).token,
+					ctx.attachmentSecret,
+				);
+				if (
+					!payload ||
+					payload.formId !== form.id ||
+					payload.fieldId !== field.id ||
+					attachmentPayloads.has(payload.id)
+				) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Invalid attachment.",
+					});
+				}
+				attachmentPayloads.set(payload.id, payload);
+				attachmentIdsByField.set(field.id, payload.id);
+			}
+			const storedAnswers = input.answers.map((answer) => ({
+				...answer,
+				storedValue: attachmentIdsByField.get(answer.fieldId) ?? answer.value,
+			}));
 			await ctx.responsesDb.insert(responsesSchema.responses).values({
 				id: responseId,
 				formId: form.id,
 			});
 			if (input.answers.length > 0) {
 				await ctx.responsesDb.insert(responsesSchema.answers).values(
-					input.answers.map((answer) => ({
+					storedAnswers.map((answer) => ({
 						id: crypto.randomUUID(),
 						responseId,
 						fieldId: answer.fieldId,
-						value: answer.value,
+						value: answer.storedValue,
 					})),
 				);
+			}
+
+			const answerRows = await ctx.responsesDb
+				.select()
+				.from(responsesSchema.answers)
+				.where(eq(responsesSchema.answers.responseId, responseId));
+			for (const answer of answerRows) {
+				const payload = [...attachmentPayloads.values()].find(
+					(candidate) => candidate.fieldId === answer.fieldId,
+				);
+				if (payload) {
+					await ctx.responsesDb.insert(responsesSchema.attachments).values({
+						id: payload.id,
+						answerId: answer.id,
+						r2Key: payload.r2Key,
+						fileName: payload.fileName,
+						mimeType: payload.mimeType,
+						sizeBytes: payload.sizeBytes,
+					});
+				}
 			}
 
 			return { responseId };

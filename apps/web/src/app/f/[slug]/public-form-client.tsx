@@ -1,10 +1,6 @@
 "use client";
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { toast } from "sonner";
-
-import { useTRPC } from "@/utils/trpc";
 import { DEFAULT_VIBE, validateAnswerValue } from "@vibeform/api";
 import { Button } from "@vibeform/ui/components/button";
 import {
@@ -17,8 +13,14 @@ import {
 import { Input } from "@vibeform/ui/components/input";
 import { Label } from "@vibeform/ui/components/label";
 import { Textarea } from "@vibeform/ui/components/textarea";
+import { useState } from "react";
+import { toast } from "sonner";
+import { useTRPC } from "@/utils/trpc";
 
-type Value = string | string[];
+type Value =
+	| string
+	| string[]
+	| { token: string; attachmentId: string; fileName: string };
 type Config = Record<string, unknown>;
 
 function parseConfig(config: unknown): Config {
@@ -80,6 +82,7 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 	const [values, setValues] = useState<Record<string, Value>>({});
 	const [errors, setErrors] = useState<Record<string, string>>({});
 	const [submitted, setSubmitted] = useState(false);
+	const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL?.replace(/\/$/, "");
 
 	const submitMutation = useMutation(
 		trpc.form.submit.mutationOptions({
@@ -90,14 +93,14 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 
 	if (formQuery.isLoading) {
 		return (
-			<div className="container mx-auto max-w-2xl px-4 py-16 text-center text-muted-foreground">
+			<div className="text-muted-foreground container mx-auto max-w-2xl px-4 py-16 text-center">
 				Loading form...
 			</div>
 		);
 	}
 	if (formQuery.isError || !formQuery.data) {
 		return (
-			<div className="container mx-auto max-w-2xl px-4 py-16 text-center text-destructive">
+			<div className="text-destructive container mx-auto max-w-2xl px-4 py-16 text-center">
 				This form is unavailable.
 			</div>
 		);
@@ -106,7 +109,7 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 		return (
 			<main className="container mx-auto max-w-2xl px-4 py-16">
 				<Card className="text-center">
-					<CardContent className="py-16 space-y-3">
+					<CardContent className="space-y-3 py-16">
 						<h1 className="text-2xl font-bold">Thank you!</h1>
 						<p className="text-muted-foreground">
 							Your response has been submitted successfully.
@@ -139,6 +142,43 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 			...current,
 			[fieldId]: result.valid ? "" : (result.error ?? "Invalid answer."),
 		}));
+	};
+
+	const uploadFile = async (fieldId: string, file: File) => {
+		if (!serverUrl) {
+			toast.error("Upload service is unavailable");
+			return;
+		}
+		const body = new FormData();
+		body.append("file", file);
+		body.append("fieldId", fieldId);
+		try {
+			const response = await fetch(
+				`${serverUrl}/f/${encodeURIComponent(slug)}/upload`,
+				{
+					method: "POST",
+					body,
+					credentials: "include",
+				},
+			);
+			const result = (await response.json()) as {
+				token?: string;
+				attachmentId?: string;
+				error?: string;
+			};
+			if (!response.ok || !result.token || !result.attachmentId) {
+				throw new Error(result.error || "Unable to upload file");
+			}
+			setValue(fieldId, {
+				token: result.token,
+				attachmentId: result.attachmentId,
+				fileName: file.name,
+			});
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Unable to upload file",
+			);
+		}
 	};
 
 	const validate = () => {
@@ -249,7 +289,7 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 												config.options.map((option) => (
 													<label
 														key={String(option)}
-														className="flex items-center gap-2 rounded border bg-background p-2"
+														className="bg-background flex items-center gap-2 rounded border p-2"
 													>
 														<input
 															type="radio"
@@ -275,7 +315,7 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 													return (
 														<label
 															key={String(option)}
-															className="flex items-center gap-2 rounded border bg-background p-2"
+															className="bg-background flex items-center gap-2 rounded border p-2"
 														>
 															<input
 																type="checkbox"
@@ -353,12 +393,20 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 													? config.allowedMimeTypes.map(String).join(",")
 													: undefined
 											}
-											onChange={(event) =>
-												setValue(field.id, event.target.files?.[0]?.name ?? "")
-											}
+											onChange={(event) => {
+												const file = event.target.files?.[0];
+												if (file) void uploadFile(field.id, file);
+											}}
 										/>
 									)}
-									{error && <p className="text-sm text-destructive">{error}</p>}
+									{field.type === "file_upload" &&
+										typeof value === "object" &&
+										"fileName" in value && (
+											<p className="text-muted-foreground text-sm">
+												Uploaded: {value.fileName}
+											</p>
+										)}
+									{error && <p className="text-destructive text-sm">{error}</p>}
 								</div>
 							);
 						})}

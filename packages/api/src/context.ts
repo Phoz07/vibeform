@@ -8,4 +8,5 @@ export type Context = {
   definitionsDb: DefinitionsDatabase;
   responsesDb?: ResponsesDatabase;
   attachments?: R2Bucket;
+  attachmentSecret?: string;
 };
