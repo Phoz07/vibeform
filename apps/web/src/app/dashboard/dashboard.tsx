@@ -307,6 +307,12 @@ export default function Dashboard({
 								>
 									Responses
 								</Button>
+								<a
+									href={`/forms/${form.id}/responses`}
+									className={buttonVariants({ size: "sm", variant: "ghost" })}
+								>
+									Open dashboard
+								</a>
 								<Button
 									size="sm"
 									variant="destructive"

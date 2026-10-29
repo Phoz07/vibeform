@@ -16,6 +16,7 @@ import { Textarea } from "@vibeform/ui/components/textarea";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useTRPC } from "@/utils/trpc";
+import { VibeProvider } from "@/components/vibe-provider";
 
 type Value =
 	| string
@@ -198,229 +199,235 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 	};
 
 	return (
-		<main className="container mx-auto max-w-2xl px-4 py-8">
-			<Card className="border-2 shadow-xl" style={style}>
-				<CardHeader className="border-b pb-6">
-					<CardTitle style={{ color: primaryColor }}>{form.title}</CardTitle>
-					{form.description && (
-						<CardDescription>{form.description}</CardDescription>
-					)}
-				</CardHeader>
-				<CardContent className="p-6">
-					<form
-						className="space-y-6"
-						onSubmit={(event) => {
-							event.preventDefault();
-							if (!validate()) return;
-							submitMutation.mutate({
-								slug,
-								answers: form.fields
-									.filter((field) => values[field.id] !== undefined)
-									.map((field) => ({
-										fieldId: field.id,
-										value: values[field.id],
-									})),
-							});
-						}}
-					>
-						{form.fields.map((field, index) => {
-							const config = parseConfig(field.config);
-							const error = errors[field.id];
-							const value = values[field.id] ?? "";
-							return (
-								<div key={field.id} className="space-y-2">
-									<Label htmlFor={field.id}>
-										{index + 1}. {field.label}{" "}
-										{field.required && (
-											<span className="text-destructive">*</span>
+		<VibeProvider
+			vibe={typeof vibe.preset === "string" ? vibe.preset : undefined}
+		>
+			<main className="container mx-auto max-w-2xl px-4 py-8">
+				<Card className="border-2 shadow-xl" style={style}>
+					<CardHeader className="border-b pb-6">
+						<CardTitle style={{ color: primaryColor }}>{form.title}</CardTitle>
+						{form.description && (
+							<CardDescription>{form.description}</CardDescription>
+						)}
+					</CardHeader>
+					<CardContent className="p-6">
+						<form
+							className="space-y-6"
+							onSubmit={(event) => {
+								event.preventDefault();
+								if (!validate()) return;
+								submitMutation.mutate({
+									slug,
+									answers: form.fields
+										.filter((field) => values[field.id] !== undefined)
+										.map((field) => ({
+											fieldId: field.id,
+											value: values[field.id],
+										})),
+								});
+							}}
+						>
+							{form.fields.map((field, index) => {
+								const config = parseConfig(field.config);
+								const error = errors[field.id];
+								const value = values[field.id] ?? "";
+								return (
+									<div key={field.id} className="space-y-2">
+										<Label htmlFor={field.id}>
+											{index + 1}. {field.label}{" "}
+											{field.required && (
+												<span className="text-destructive">*</span>
+											)}
+										</Label>
+										{field.type === "short_text" && (
+											<Input
+												id={field.id}
+												value={typeof value === "string" ? value : ""}
+												placeholder={
+													typeof config.placeholder === "string"
+														? config.placeholder
+														: undefined
+												}
+												minLength={
+													typeof config.minLength === "number"
+														? config.minLength
+														: undefined
+												}
+												maxLength={
+													typeof config.maxLength === "number"
+														? config.maxLength
+														: undefined
+												}
+												onChange={(event) =>
+													setValue(field.id, event.target.value)
+												}
+											/>
 										)}
-									</Label>
-									{field.type === "short_text" && (
-										<Input
-											id={field.id}
-											value={typeof value === "string" ? value : ""}
-											placeholder={
-												typeof config.placeholder === "string"
-													? config.placeholder
-													: undefined
-											}
-											minLength={
-												typeof config.minLength === "number"
-													? config.minLength
-													: undefined
-											}
-											maxLength={
-												typeof config.maxLength === "number"
-													? config.maxLength
-													: undefined
-											}
-											onChange={(event) =>
-												setValue(field.id, event.target.value)
-											}
-										/>
-									)}
-									{field.type === "long_text" && (
-										<Textarea
-											id={field.id}
-											value={typeof value === "string" ? value : ""}
-											placeholder={
-												typeof config.placeholder === "string"
-													? config.placeholder
-													: undefined
-											}
-											minLength={
-												typeof config.minLength === "number"
-													? config.minLength
-													: undefined
-											}
-											maxLength={
-												typeof config.maxLength === "number"
-													? config.maxLength
-													: undefined
-											}
-											onChange={(event) =>
-												setValue(field.id, event.target.value)
-											}
-										/>
-									)}
-									{field.type === "single_choice" && (
-										<div className="space-y-2">
-											{Array.isArray(config.options) &&
-												config.options.map((option) => (
-													<label
-														key={String(option)}
-														className="bg-background flex items-center gap-2 rounded border p-2"
-													>
-														<input
-															type="radio"
-															name={field.id}
-															value={String(option)}
-															checked={value === String(option)}
-															onChange={(event) =>
-																setValue(field.id, event.target.value)
-															}
-														/>
-														{String(option)}
-													</label>
-												))}
-										</div>
-									)}
-									{field.type === "multiple_choice" && (
-										<div className="space-y-2">
-											{Array.isArray(config.options) &&
-												config.options.map((option) => {
-													const selected =
-														Array.isArray(value) &&
-														value.includes(String(option));
-													return (
+										{field.type === "long_text" && (
+											<Textarea
+												id={field.id}
+												value={typeof value === "string" ? value : ""}
+												placeholder={
+													typeof config.placeholder === "string"
+														? config.placeholder
+														: undefined
+												}
+												minLength={
+													typeof config.minLength === "number"
+														? config.minLength
+														: undefined
+												}
+												maxLength={
+													typeof config.maxLength === "number"
+														? config.maxLength
+														: undefined
+												}
+												onChange={(event) =>
+													setValue(field.id, event.target.value)
+												}
+											/>
+										)}
+										{field.type === "single_choice" && (
+											<div className="space-y-2">
+												{Array.isArray(config.options) &&
+													config.options.map((option) => (
 														<label
 															key={String(option)}
 															className="bg-background flex items-center gap-2 rounded border p-2"
 														>
 															<input
-																type="checkbox"
-																checked={selected}
-																onChange={(event) => {
-																	const current = Array.isArray(value)
-																		? value
-																		: [];
-																	setValue(
-																		field.id,
-																		event.target.checked
-																			? [...current, String(option)]
-																			: current.filter(
-																					(item) => item !== String(option),
-																				),
-																	);
-																}}
+																type="radio"
+																name={field.id}
+																value={String(option)}
+																checked={value === String(option)}
+																onChange={(event) =>
+																	setValue(field.id, event.target.value)
+																}
 															/>
 															{String(option)}
 														</label>
-													);
-												})}
-										</div>
-									)}
-									{field.type === "rating" && (
-										<div className="flex flex-wrap gap-2">
-											{Array.from(
-												{
-													length:
-														typeof config.maxRating === "number"
-															? config.maxRating
-															: 5,
-												},
-												(_, rating) => rating + 1,
-											).map((rating) => (
-												<Button
-													key={rating}
-													type="button"
-													variant={
-														value === String(rating) ? "default" : "outline"
-													}
-													onClick={() => setValue(field.id, String(rating))}
-												>
-													{rating}
-												</Button>
-											))}
-										</div>
-									)}
-									{field.type === "date" && (
-										<Input
-											id={field.id}
-											type="date"
-											value={typeof value === "string" ? value : ""}
-											min={
-												typeof config.minDate === "string"
-													? config.minDate
-													: undefined
-											}
-											max={
-												typeof config.maxDate === "string"
-													? config.maxDate
-													: undefined
-											}
-											onChange={(event) =>
-												setValue(field.id, event.target.value)
-											}
-										/>
-									)}
-									{field.type === "file_upload" && (
-										<Input
-											id={field.id}
-											type="file"
-											accept={
-												Array.isArray(config.allowedMimeTypes)
-													? config.allowedMimeTypes.map(String).join(",")
-													: undefined
-											}
-											onChange={(event) => {
-												const file = event.target.files?.[0];
-												if (file) void uploadFile(field.id, file);
-											}}
-										/>
-									)}
-									{field.type === "file_upload" &&
-										typeof value === "object" &&
-										"fileName" in value && (
-											<p className="text-muted-foreground text-sm">
-												Uploaded: {value.fileName}
-											</p>
+													))}
+											</div>
 										)}
-									{error && <p className="text-destructive text-sm">{error}</p>}
-								</div>
-							);
-						})}
-						<Button
-							type="submit"
-							className="w-full"
-							disabled={submitMutation.isPending}
-							style={{ backgroundColor: primaryColor }}
-						>
-							{submitMutation.isPending ? "Submitting..." : "Submit response"}
-						</Button>
-					</form>
-				</CardContent>
-			</Card>
-		</main>
+										{field.type === "multiple_choice" && (
+											<div className="space-y-2">
+												{Array.isArray(config.options) &&
+													config.options.map((option) => {
+														const selected =
+															Array.isArray(value) &&
+															value.includes(String(option));
+														return (
+															<label
+																key={String(option)}
+																className="bg-background flex items-center gap-2 rounded border p-2"
+															>
+																<input
+																	type="checkbox"
+																	checked={selected}
+																	onChange={(event) => {
+																		const current = Array.isArray(value)
+																			? value
+																			: [];
+																		setValue(
+																			field.id,
+																			event.target.checked
+																				? [...current, String(option)]
+																				: current.filter(
+																						(item) => item !== String(option),
+																					),
+																		);
+																	}}
+																/>
+																{String(option)}
+															</label>
+														);
+													})}
+											</div>
+										)}
+										{field.type === "rating" && (
+											<div className="flex flex-wrap gap-2">
+												{Array.from(
+													{
+														length:
+															typeof config.maxRating === "number"
+																? config.maxRating
+																: 5,
+													},
+													(_, rating) => rating + 1,
+												).map((rating) => (
+													<Button
+														key={rating}
+														type="button"
+														variant={
+															value === String(rating) ? "default" : "outline"
+														}
+														onClick={() => setValue(field.id, String(rating))}
+													>
+														{rating}
+													</Button>
+												))}
+											</div>
+										)}
+										{field.type === "date" && (
+											<Input
+												id={field.id}
+												type="date"
+												value={typeof value === "string" ? value : ""}
+												min={
+													typeof config.minDate === "string"
+														? config.minDate
+														: undefined
+												}
+												max={
+													typeof config.maxDate === "string"
+														? config.maxDate
+														: undefined
+												}
+												onChange={(event) =>
+													setValue(field.id, event.target.value)
+												}
+											/>
+										)}
+										{field.type === "file_upload" && (
+											<Input
+												id={field.id}
+												type="file"
+												accept={
+													Array.isArray(config.allowedMimeTypes)
+														? config.allowedMimeTypes.map(String).join(",")
+														: undefined
+												}
+												onChange={(event) => {
+													const file = event.target.files?.[0];
+													if (file) void uploadFile(field.id, file);
+												}}
+											/>
+										)}
+										{field.type === "file_upload" &&
+											typeof value === "object" &&
+											"fileName" in value && (
+												<p className="text-muted-foreground text-sm">
+													Uploaded: {value.fileName}
+												</p>
+											)}
+										{error && (
+											<p className="text-destructive text-sm">{error}</p>
+										)}
+									</div>
+								);
+							})}
+							<Button
+								type="submit"
+								className="w-full"
+								disabled={submitMutation.isPending}
+								style={{ backgroundColor: primaryColor }}
+							>
+								{submitMutation.isPending ? "Submitting..." : "Submit response"}
+							</Button>
+						</form>
+					</CardContent>
+				</Card>
+			</main>
+		</VibeProvider>
 	);
 }
