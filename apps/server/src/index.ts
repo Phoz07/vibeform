@@ -37,6 +37,12 @@ async function getIdentifyUser() {
 
 const app = new Hono<EvlogVariables>();
 
+const allowedOrigins = new Set([
+	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
+	"http://localhost:3000",
+	"http://localhost:3001",
+]);
+
 app.use(evlog());
 app.use("*", async (c, next) => {
 	const middleware = await getIdentifyUser();
@@ -47,7 +53,10 @@ app.use("*", async (c, next) => {
 app.use(
 	"/*",
 	cors({
-		origin: ENV.CORS_ORIGIN,
+		origin: (origin) =>
+			allowedOrigins.has(origin) || origin === ENV.CORS_ORIGIN
+				? origin
+				: undefined,
 		allowMethods: ["GET", "POST", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization"],
 		credentials: true,

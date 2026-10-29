@@ -1,12 +1,11 @@
+import { FieldTypeSchema, validateFieldConfig } from "@vibeform/api";
+import { VibeTokensSchema } from "@vibeform/api/schema/vibe";
+import { hashMcpToken } from "@vibeform/api/utils/mcp-token";
+import { createDefinitionsDb, definitionsSchema } from "@vibeform/db";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
-
-import { createDefinitionsDb, definitionsSchema } from "@vibeform/db";
-import { FieldTypeSchema, validateFieldConfig } from "@vibeform/api";
-import { hashMcpToken } from "@vibeform/api/utils/mcp-token";
-import { VibeTokensSchema } from "@vibeform/api/schema/vibe";
 
 type Bindings = { DEFINITIONS_DB: D1Database };
 type Auth = { ownerId: string; scopes: string[]; tokenId: string };
@@ -19,12 +18,19 @@ type RpcRequest = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+const allowedOrigins = new Set([
+	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
+	"http://localhost:3000",
+	"http://localhost:3001",
+]);
+
 app.use(
 	"/*",
 	cors({
-		origin: "*",
+		origin: (origin) => (allowedOrigins.has(origin) ? origin : undefined),
 		allowMethods: ["GET", "POST", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+		credentials: true,
 	}),
 );
 
