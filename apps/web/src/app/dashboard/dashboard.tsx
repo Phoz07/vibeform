@@ -37,6 +37,11 @@ export default function Dashboard({
 		"forms:write",
 	);
 	const [newToken, setNewToken] = useState<string | null>(null);
+	const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
+	const responsesQuery = useQuery({
+		...trpc.form.responses.queryOptions({ formId: selectedFormId ?? "" }),
+		enabled: selectedFormId !== null,
+	});
 
 	const createFormMutation = useMutation(
 		trpc.form.create.mutationOptions({
@@ -76,6 +81,33 @@ export default function Dashboard({
 			},
 			onError: (error) =>
 				toast.error(error.message || "Failed to revoke MCP token"),
+		}),
+	);
+
+	const deleteResponseMutation = useMutation(
+		trpc.form.deleteResponse.mutationOptions({
+			onSuccess: () => {
+				if (selectedFormId) {
+					queryClient.invalidateQueries(
+						trpc.form.responses.queryFilter({ formId: selectedFormId }),
+					);
+				}
+				queryClient.invalidateQueries(trpc.form.list.queryFilter());
+				toast.success("Response deleted");
+			},
+			onError: (error) =>
+				toast.error(error.message || "Failed to delete response"),
+		}),
+	);
+
+	const deleteFormMutation = useMutation(
+		trpc.form.delete.mutationOptions({
+			onSuccess: () => {
+				setSelectedFormId(null);
+				queryClient.invalidateQueries(trpc.form.list.queryFilter());
+				toast.success("Form and all associated data deleted");
+			},
+			onError: (error) => toast.error(error.message || "Failed to delete form"),
 		}),
 	);
 
@@ -258,8 +290,39 @@ export default function Dashboard({
 								<CardDescription className="line-clamp-2">
 									{form.description || "No description provided."}
 								</CardDescription>
+								<p className="text-xs text-muted-foreground">
+									{form.responseCount} response
+									{form.responseCount === 1 ? "" : "s"}
+								</p>
 							</CardHeader>
 							<CardFooter className="flex items-center justify-between pt-4 border-t gap-2">
+								<Button
+									size="sm"
+									variant="secondary"
+									onClick={() =>
+										setSelectedFormId(
+											selectedFormId === form.id ? null : form.id,
+										)
+									}
+								>
+									Responses
+								</Button>
+								<Button
+									size="sm"
+									variant="destructive"
+									onClick={() => {
+										if (
+											window.confirm(
+												"Delete this form and all responses and attachments?",
+											)
+										) {
+											deleteFormMutation.mutate({ id: form.id });
+										}
+									}}
+									disabled={deleteFormMutation.isPending}
+								>
+									Delete
+								</Button>
 								<Link
 									href={`/builder/${form.id}`}
 									className={buttonVariants({
@@ -298,6 +361,72 @@ export default function Dashboard({
 						<Button onClick={() => setIsCreating(true)}>
 							Create Your First Form
 						</Button>
+					</CardContent>
+				</Card>
+			)}
+			{selectedFormId && (
+				<Card>
+					<CardHeader>
+						<CardTitle>Submitted responses</CardTitle>
+						<CardDescription>
+							Answer values are only visible to you.
+						</CardDescription>
+					</CardHeader>
+					<CardContent className="space-y-4">
+						{responsesQuery.isLoading && (
+							<p className="text-sm text-muted-foreground">
+								Loading responses...
+							</p>
+						)}
+						{responsesQuery.data?.length === 0 && (
+							<p className="text-sm text-muted-foreground">No responses yet.</p>
+						)}
+						{responsesQuery.data?.map((response) => (
+							<div key={response.id} className="rounded-md border p-4">
+								<div className="mb-3 flex items-center justify-between gap-3">
+									<span className="text-xs text-muted-foreground">
+										{new Date(response.submittedAt).toLocaleString()}
+									</span>
+									<Button
+										size="sm"
+										variant="destructive"
+										onClick={() =>
+											deleteResponseMutation.mutate({
+												formId: selectedFormId,
+												responseId: response.id,
+											})
+										}
+									>
+										Delete response
+									</Button>
+								</div>
+								<div className="space-y-2 text-sm">
+									{response.answers.map((answer) => (
+										<div key={answer.id}>
+											<p className="font-medium">{answer.label}</p>
+											<p className="whitespace-pre-wrap text-muted-foreground">
+												{typeof answer.value === "string"
+													? answer.value
+													: JSON.stringify(answer.value)}
+												{answer.attachment && (
+													<>
+														{" "}
+														<a
+															className="text-primary underline"
+															href={`${process.env.NEXT_PUBLIC_SERVER_URL}/attachments/${answer.attachment.id}`}
+															target="_blank"
+															rel="noreferrer"
+														>
+															Download {answer.attachment.fileName}
+														</a>
+													</>
+												)}
+											</p>
+										</div>
+									))}
+								</div>
+							</div>
+						))}
 					</CardContent>
 				</Card>
 			)}

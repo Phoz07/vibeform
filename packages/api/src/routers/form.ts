@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import type { Context } from "../context";
@@ -50,6 +50,226 @@ async function getPublishedForm(ctx: Context, slug: string) {
 }
 
 export const formRouter = router({
+	responses: protectedProcedure
+		.input(z.object({ formId: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			if (!ctx.responsesDb) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Response storage is unavailable",
+				});
+			}
+			const { definitionsSchema, responsesSchema } = await import(
+				"@vibeform/db"
+			);
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
+			if (!form)
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+
+			const fields = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.fields)
+				.where(eq(definitionsSchema.fields.formId, form.id));
+			const fieldLabels = new Map(
+				fields.map((field) => [field.id, field.label]),
+			);
+			const responses = await ctx.responsesDb
+				.select()
+				.from(responsesSchema.responses)
+				.where(eq(responsesSchema.responses.formId, form.id))
+				.orderBy(desc(responsesSchema.responses.submittedAt));
+			const result = [];
+			for (const response of responses) {
+				const answers = await ctx.responsesDb
+					.select()
+					.from(responsesSchema.answers)
+					.where(eq(responsesSchema.answers.responseId, response.id));
+				const attachments =
+					answers.length > 0
+						? await ctx.responsesDb
+								.select()
+								.from(responsesSchema.attachments)
+								.where(
+									inArray(
+										responsesSchema.attachments.answerId,
+										answers.map((answer) => answer.id),
+									),
+								)
+						: [];
+				result.push({
+					...response,
+					answers: answers.map((answer) => ({
+						...answer,
+						label: fieldLabels.get(answer.fieldId) ?? "Deleted field",
+						attachment: (() => {
+							const attachment = attachments.find(
+								(attachment) => attachment.answerId === answer.id,
+							);
+							return attachment
+								? {
+										id: attachment.id,
+										fileName: attachment.fileName,
+										mimeType: attachment.mimeType,
+										sizeBytes: attachment.sizeBytes,
+									}
+								: null;
+						})(),
+					})),
+				});
+			}
+			return result;
+		}),
+
+	deleteResponse: protectedProcedure
+		.input(
+			z.object({ formId: z.string().min(1), responseId: z.string().min(1) }),
+		)
+		.mutation(async ({ ctx, input }) => {
+			if (!ctx.responsesDb) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Response storage is unavailable",
+				});
+			}
+			if (!ctx.attachments) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Attachment storage is unavailable",
+				});
+			}
+			const { definitionsSchema, responsesSchema } = await import(
+				"@vibeform/db"
+			);
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
+			if (!form)
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			const [response] = await ctx.responsesDb
+				.select()
+				.from(responsesSchema.responses)
+				.where(
+					and(
+						eq(responsesSchema.responses.id, input.responseId),
+						eq(responsesSchema.responses.formId, form.id),
+					),
+				);
+			if (!response) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Response not found",
+				});
+			}
+			const answers = await ctx.responsesDb
+				.select()
+				.from(responsesSchema.answers)
+				.where(eq(responsesSchema.answers.responseId, response.id));
+			const attachments =
+				answers.length > 0
+					? await ctx.responsesDb
+							.select()
+							.from(responsesSchema.attachments)
+							.where(
+								inArray(
+									responsesSchema.attachments.answerId,
+									answers.map((answer) => answer.id),
+								),
+							)
+					: [];
+			await ctx.attachments.delete(
+				attachments.map((attachment) => attachment.r2Key),
+			);
+			await ctx.responsesDb
+				.delete(responsesSchema.responses)
+				.where(eq(responsesSchema.responses.id, response.id));
+			await ctx.definitionsDb
+				.update(definitionsSchema.forms)
+				.set({
+					responseCount: sql`max(0, ${definitionsSchema.forms.responseCount} - 1)`,
+				})
+				.where(eq(definitionsSchema.forms.id, form.id));
+			return { success: true };
+		}),
+
+	delete: protectedProcedure
+		.input(z.object({ id: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			if (!ctx.responsesDb) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Response storage is unavailable",
+				});
+			}
+			if (!ctx.attachments) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Attachment storage is unavailable",
+				});
+			}
+			const { definitionsSchema, responsesSchema } = await import(
+				"@vibeform/db"
+			);
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.id),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
+			if (!form)
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			const responses = await ctx.responsesDb
+				.select()
+				.from(responsesSchema.responses)
+				.where(eq(responsesSchema.responses.formId, form.id));
+			const responseIds = responses.map((response) => response.id);
+			const answers =
+				responseIds.length > 0
+					? await ctx.responsesDb
+							.select()
+							.from(responsesSchema.answers)
+							.where(inArray(responsesSchema.answers.responseId, responseIds))
+					: [];
+			const attachments =
+				answers.length > 0
+					? await ctx.responsesDb
+							.select()
+							.from(responsesSchema.attachments)
+							.where(
+								inArray(
+									responsesSchema.attachments.answerId,
+									answers.map((answer) => answer.id),
+								),
+							)
+					: [];
+			await ctx.attachments.delete(
+				attachments.map((attachment) => attachment.r2Key),
+			);
+			await ctx.responsesDb
+				.delete(responsesSchema.responses)
+				.where(eq(responsesSchema.responses.formId, form.id));
+			await ctx.definitionsDb
+				.delete(definitionsSchema.forms)
+				.where(eq(definitionsSchema.forms.id, form.id));
+			return { success: true };
+		}),
+
 	getPublic: publicProcedure
 		.input(z.object({ slug: z.string().min(1) }))
 		.query(async ({ ctx, input }) => {
