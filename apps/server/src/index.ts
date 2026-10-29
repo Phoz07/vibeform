@@ -46,12 +46,6 @@ const securityHeaders = {
 	"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 };
 
-const allowedOrigins = new Set([
-	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
-	"http://localhost:3000",
-	"http://localhost:3001",
-]);
-
 app.use(evlog());
 app.use("*", async (c, next) => {
 	await next();
@@ -68,10 +62,7 @@ app.use("*", async (c, next) => {
 app.use(
 	"/*",
 	cors({
-		origin: (origin) =>
-			allowedOrigins.has(origin) || origin === ENV.CORS_ORIGIN
-				? origin
-				: undefined,
+		origin: (origin) => (origin === ENV.CORS_ORIGIN ? origin : undefined),
 		allowMethods: ["GET", "POST", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization"],
 		credentials: true,

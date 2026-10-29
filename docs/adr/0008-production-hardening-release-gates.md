@@ -28,8 +28,9 @@ covered by an isolation test.
 - CORS allows only configured, exact origins; missing or invalid production
   configuration fails deployment rather than widening access.
 - Security headers are applied at the Worker boundary and the Next.js boundary.
-  CSP is generated from the actual asset and authentication strategy; it is
-  not a permissive placeholder.
+  API-only Workers use a restrictive non-HTML CSP; any HTML-serving boundary
+  generates CSP from its actual asset and authentication strategy rather than
+  using a permissive placeholder.
 - Rate limiting for public submission and upload routes uses a Cloudflare
   stateful primitive (Durable Object, Workers Rate Limiting, or an equivalent
   configured service). In-memory counters are not an acceptable production

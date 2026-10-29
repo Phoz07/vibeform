@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 
-type Bindings = { DEFINITIONS_DB: D1Database };
+type Bindings = { DEFINITIONS_DB: D1Database; CORS_ORIGIN: string };
 type Auth = { ownerId: string; scopes: string[]; tokenId: string };
 type RpcRequest = {
 	jsonrpc?: string;
@@ -16,17 +16,21 @@ type RpcRequest = {
 	params?: Record<string, unknown>;
 };
 
-const RpcRequestSchema = z.object({
-	jsonrpc: z.literal("2.0"),
-	id: z.union([z.string(), z.number(), z.null()]).optional(),
-	method: z.string().min(1),
-	params: z.record(z.string(), z.unknown()).optional(),
-}).strict();
+const RpcRequestSchema = z
+	.object({
+		jsonrpc: z.literal("2.0"),
+		id: z.union([z.string(), z.number(), z.null()]).optional(),
+		method: z.string().min(1),
+		params: z.record(z.string(), z.unknown()).optional(),
+	})
+	.strict();
 
-const ToolCallParamsSchema = z.object({
-	name: z.string().min(1),
-	arguments: z.record(z.string(), z.unknown()).optional(),
-}).strict();
+const ToolCallParamsSchema = z
+	.object({
+		name: z.string().min(1),
+		arguments: z.record(z.string(), z.unknown()).optional(),
+	})
+	.strict();
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -46,16 +50,10 @@ app.use("*", async (c, next) => {
 	}
 });
 
-const allowedOrigins = new Set([
-	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
-	"http://localhost:3000",
-	"http://localhost:3001",
-]);
-
 app.use(
 	"/*",
 	cors({
-		origin: (origin) => (allowedOrigins.has(origin) ? origin : undefined),
+		origin: (origin, c) => (origin === c.env.CORS_ORIGIN ? origin : undefined),
 		allowMethods: ["GET", "POST", "OPTIONS"],
 		allowHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
 		credentials: true,
@@ -163,6 +161,50 @@ const toolDefinitions = [
 ];
 
 const toolNames = new Set(toolDefinitions.map((tool) => tool.name));
+const toolArgumentSchemas: Record<string, z.ZodType> = {
+	list_forms: z.object({}).strict(),
+	get_form_definition: z.object({ formId: z.string() }).strict(),
+	get_response_count: z.object({ formId: z.string() }).strict(),
+	create_form: z
+		.object({
+			title: z.string().min(1).max(255),
+			description: z.string().optional(),
+		})
+		.strict(),
+	add_field: z
+		.object({
+			formId: z.string(),
+			type: FieldTypeSchema,
+			label: z.string().min(1).max(255),
+			required: z.boolean().optional(),
+			config: z.unknown().optional(),
+		})
+		.strict(),
+	update_field: z
+		.object({
+			fieldId: z.string(),
+			label: z.string().min(1).max(255).optional(),
+			required: z.boolean().optional(),
+			config: z.unknown().optional(),
+		})
+		.strict(),
+	remove_field: z.object({ fieldId: z.string() }).strict(),
+	reorder_fields: z
+		.object({ formId: z.string(), fieldIds: z.array(z.string()) })
+		.strict(),
+	set_vibe: z
+		.object({ formId: z.string(), vibeTokens: VibeTokensSchema })
+		.strict(),
+};
+
+class McpAuthorizationError extends Error {
+	constructor(
+		message: string,
+		readonly code = -32003,
+	) {
+		super(message);
+	}
+}
 
 function rpcError(id: RpcRequest["id"], code: number, message: string) {
 	return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
@@ -230,7 +272,7 @@ async function callTool(
 		"get_response_count",
 	].includes(name);
 	if (!requireScope(auth, readOnly ? "forms:read" : "forms:write")) {
-		throw new Error("Insufficient MCP token scope");
+		throw new McpAuthorizationError("Insufficient MCP token scope");
 	}
 
 	if (name === "list_forms") {
@@ -242,7 +284,7 @@ async function callTool(
 	if (name === "get_form_definition" || name === "get_response_count") {
 		const formId = z.string().parse(args.formId);
 		const form = await ownedForm(db, auth.ownerId, formId);
-		if (!form) throw new Error("Form not found");
+		if (!form) throw new McpAuthorizationError("Form not found", -32004);
 		if (name === "get_response_count")
 			return { formId, responseCount: form.responseCount };
 		const fields = await db
@@ -277,7 +319,7 @@ async function callTool(
 	if (name === "add_field") {
 		const formId = z.string().parse(args.formId);
 		const form = await ownedForm(db, auth.ownerId, formId);
-		if (!form) throw new Error("Form not found");
+		if (!form) throw new McpAuthorizationError("Form not found", -32004);
 		const type = FieldTypeSchema.parse(args.type);
 		const config = validateFieldConfig(type, args.config);
 		const existing = await db
@@ -315,7 +357,7 @@ async function callTool(
 				),
 			);
 		if (!field || !(await ownedForm(db, auth.ownerId, field.formId)))
-			throw new Error("Field not found");
+			throw new McpAuthorizationError("Field not found", -32004);
 		const update: Partial<typeof definitionsSchema.fields.$inferInsert> = {};
 		if (typeof args.label === "string")
 			update.label = z.string().min(1).max(255).parse(args.label);
@@ -343,7 +385,7 @@ async function callTool(
 				),
 			);
 		if (!field || !(await ownedForm(db, auth.ownerId, field.formId)))
-			throw new Error("Field not found");
+			throw new McpAuthorizationError("Field not found", -32004);
 		const [removed] = await db
 			.update(definitionsSchema.fields)
 			.set({ deletedAt: new Date() })
@@ -354,7 +396,7 @@ async function callTool(
 	if (name === "reorder_fields") {
 		const formId = z.string().parse(args.formId);
 		if (!(await ownedForm(db, auth.ownerId, formId)))
-			throw new Error("Form not found");
+			throw new McpAuthorizationError("Form not found", -32004);
 		const fieldIds = z.array(z.string()).parse(args.fieldIds);
 		const activeFields = await db
 			.select({ id: definitionsSchema.fields.id })
@@ -389,7 +431,7 @@ async function callTool(
 	if (name === "set_vibe") {
 		const formId = z.string().parse(args.formId);
 		if (!(await ownedForm(db, auth.ownerId, formId)))
-			throw new Error("Form not found");
+			throw new McpAuthorizationError("Form not found", -32004);
 		const vibeTokens = VibeTokensSchema.parse(args.vibeTokens);
 		const [updated] = await db
 			.update(definitionsSchema.forms)
@@ -435,6 +477,10 @@ app.post("/mcp", async (c) => {
 		}
 		const name = parsedParams.data.name;
 		const args = parsedParams.data.arguments ?? {};
+		const parsedArgs = toolArgumentSchemas[name]?.safeParse(args);
+		if (!parsedArgs?.success) {
+			return c.json(rpcError(request.id, -32602, "Invalid tool arguments"));
+		}
 		try {
 			const result = await callTool(
 				createDefinitionsDb(c.env),
@@ -448,6 +494,8 @@ app.post("/mcp", async (c) => {
 				result: { content: [{ type: "text", text: JSON.stringify(result) }] },
 			});
 		} catch (error) {
+			if (error instanceof McpAuthorizationError)
+				return c.json(rpcError(request.id, error.code, error.message));
 			return c.json({
 				jsonrpc: "2.0",
 				id: request.id ?? null,

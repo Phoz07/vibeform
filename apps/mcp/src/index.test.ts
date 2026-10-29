@@ -68,11 +68,9 @@ describe("MCP worker HTTP boundary", () => {
 	});
 
 	it("returns security headers on health responses", async () => {
-		const response = await app.request(
-			"/health",
-			undefined,
-			{ DEFINITIONS_DB: {} as D1Database },
-		);
+		const response = await app.request("/health", undefined, {
+			DEFINITIONS_DB: {} as D1Database,
+		});
 
 		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 		expect(response.headers.get("referrer-policy")).toBe(
@@ -83,7 +81,9 @@ describe("MCP worker HTTP boundary", () => {
 	it("keeps response data and file storage outside the MCP worker", async () => {
 		const source = await readFile("apps/mcp/src/index.ts", "utf8");
 
-		expect(source).toContain("type Bindings = { DEFINITIONS_DB: D1Database }");
+		expect(source).toContain(
+			"type Bindings = { DEFINITIONS_DB: D1Database; CORS_ORIGIN: string }",
+		);
 		expect(source).not.toContain("RESPONSES_DB");
 		expect(source).not.toContain("ATTACHMENTS");
 		expect(source).not.toMatch(/name:\s*"(?:get|list|read)_responses?"/);

@@ -5,85 +5,86 @@ import * as Effect from "effect/Effect";
 import "varlock/auto-load";
 
 export const definitionsDb = Cloudflare.D1.Database("definitions-database", {
-  migrations: "../../packages/db/src/migrations/definitions",
+	migrations: "../../packages/db/src/migrations/definitions",
 });
 
 export const responsesDb = Cloudflare.D1.Database("responses-database", {
-  migrations: "../../packages/db/src/migrations/responses",
+	migrations: "../../packages/db/src/migrations/responses",
 });
 
 export const attachments = Cloudflare.R2.Bucket("attachments");
 
 export const server = Cloudflare.Worker("server", {
-  main: "../../apps/server/src/index.ts",
-  compatibility: {
-    flags: ["nodejs_compat"],
-  },
-  env: {
-    DEFINITIONS_DB: definitionsDb,
-    RESPONSES_DB: responsesDb,
-    ATTACHMENTS: attachments,
-    DB: definitionsDb,
-    CORS_ORIGIN: Config.String("CORS_ORIGIN"),
-    BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
-    BETTER_AUTH_URL: Cloudflare.Worker.URL,
-  },
-  dev: {
-    port: 3000,
-  },
+	main: "../../apps/server/src/index.ts",
+	compatibility: {
+		flags: ["nodejs_compat"],
+	},
+	env: {
+		DEFINITIONS_DB: definitionsDb,
+		RESPONSES_DB: responsesDb,
+		ATTACHMENTS: attachments,
+		DB: definitionsDb,
+		CORS_ORIGIN: Config.String("CORS_ORIGIN"),
+		BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
+		BETTER_AUTH_URL: Cloudflare.Worker.URL,
+	},
+	dev: {
+		port: 3000,
+	},
 });
 
 export const mcp = Cloudflare.Worker("mcp", {
-  main: "../../apps/mcp/src/index.ts",
-  compatibility: {
-    flags: ["nodejs_compat"],
-  },
-  env: {
-    DEFINITIONS_DB: definitionsDb,
-  },
-  dev: {
-    port: 3002,
-  },
+	main: "../../apps/mcp/src/index.ts",
+	compatibility: {
+		flags: ["nodejs_compat"],
+	},
+	env: {
+		DEFINITIONS_DB: definitionsDb,
+		CORS_ORIGIN: Config.String("CORS_ORIGIN"),
+	},
+	dev: {
+		port: 3002,
+	},
 });
 
 export type ServerEnv = Cloudflare.InferEnv<typeof server>;
 export type McpEnv = Cloudflare.InferEnv<typeof mcp>;
 
 export default Alchemy.Stack(
-  "vibeform",
-  {
-    providers: Cloudflare.providers(),
-    state: Cloudflare.state(),
-  },
-  Effect.gen(function* () {
-    const serverWorker = yield* server;
-    const mcpWorker = yield* mcp;
-    const webWorker = yield* Cloudflare.Website.StaticSite("web", {
-      cwd: "../../apps/web",
-      command: "pnpm run build:cloudflare",
-      // Rebuild shared workspace dependencies until Alchemy has a workspace-aware default memo.
-      memo: false,
-      outdir: ".open-next/assets",
-      main: "../../apps/web/.open-next/worker.js",
-      bundle: true,
-      compatibility: {
-        flags: ["nodejs_compat", "global_fetch_strictly_public"],
-      },
-      env: {
-        IMAGES: Cloudflare.Images.Images(),
-        NEXT_PUBLIC_SERVER_URL: serverWorker.url.as<string>(),
-        NEXT_PUBLIC_MCP_URL: mcpWorker.url.as<string>(),
-      },
-      dev: {
-        command: "pnpm run dev:bare",
-        url: "http://localhost:3001",
-      },
-    });
+	"vibeform",
+	{
+		providers: Cloudflare.providers(),
+		state: Cloudflare.state(),
+	},
+	Effect.gen(function* () {
+		const serverWorker = yield* server;
+		const mcpWorker = yield* mcp;
+		const webWorker = yield* Cloudflare.Website.StaticSite("web", {
+			cwd: "../../apps/web",
+			command: "pnpm run build:cloudflare",
+			// Rebuild shared workspace dependencies until Alchemy has a workspace-aware default memo.
+			memo: false,
+			outdir: ".open-next/assets",
+			main: "../../apps/web/.open-next/worker.js",
+			bundle: true,
+			compatibility: {
+				flags: ["nodejs_compat", "global_fetch_strictly_public"],
+			},
+			env: {
+				IMAGES: Cloudflare.Images.Images(),
+				NEXT_PUBLIC_SERVER_URL: serverWorker.url.as<string>(),
+				NEXT_PUBLIC_MCP_URL: mcpWorker.url.as<string>(),
+			},
+			dev: {
+				command: "pnpm run dev:bare",
+				url: "http://localhost:3001",
+			},
+		});
 
-    return {
-      web: webWorker.url,
-      server: serverWorker.url,
-      mcp: mcpWorker.url,
-    };
-  }),
+		return {
+			web: webWorker.url,
+			server: serverWorker.url,
+			mcp: mcpWorker.url,
+		};
+	}),
 );
