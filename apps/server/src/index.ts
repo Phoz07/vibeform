@@ -22,19 +22,25 @@ initLogger({
 	env: { service: "vibeform-server" },
 });
 
-const identifyUser = createAuthMiddleware(
-	(await createAuth()) as BetterAuthInstance,
-	{
-		exclude: ["/api/auth/**"],
-		maskEmail: true,
-	},
-);
+let identifyUser: ReturnType<typeof createAuthMiddleware> | undefined;
+
+async function getIdentifyUser() {
+	identifyUser ??= createAuthMiddleware(
+		(await createAuth()) as BetterAuthInstance,
+		{
+			exclude: ["/api/auth/**"],
+			maskEmail: true,
+		},
+	);
+	return identifyUser;
+}
 
 const app = new Hono<EvlogVariables>();
 
 app.use(evlog());
 app.use("*", async (c, next) => {
-	await identifyUser(c.get("log"), c.req.raw.headers, c.req.path);
+	const middleware = await getIdentifyUser();
+	await middleware(c.get("log"), c.req.raw.headers, c.req.path);
 	await next();
 });
 
