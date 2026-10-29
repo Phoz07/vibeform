@@ -1,22 +1,33 @@
 import type { Context as ApiContext } from "@vibeform/api/context";
 import type { Context as HonoContext } from "hono";
 
-import { getDb } from "./services";
-import { createAuth } from "./services";
+import { ENV } from "./env.server";
+import { createAuth, getDefinitionsDb, getResponsesDb } from "./services";
 
 export type CreateContextOptions = {
   context: HonoContext;
 };
 
 export async function createContext({ context }: CreateContextOptions): Promise<ApiContext> {
-  const db = await getDb();
+  const definitionsDb = getDefinitionsDb();
+  let responsesDb = undefined;
+  try {
+    responsesDb = getResponsesDb();
+  } catch {
+    // If not bound in test or specific env
+  }
+
   const session = await (
-    await createAuth(db)
+    await createAuth(definitionsDb)
   ).api.getSession({
     headers: context.req.raw.headers,
   });
+
   return {
-    db,
+    db: definitionsDb,
+    definitionsDb,
+    responsesDb,
+    attachments: (ENV as unknown as { ATTACHMENTS?: R2Bucket }).ATTACHMENTS,
     session,
   };
 }

@@ -1,0 +1,9 @@
+{
+  "extends": "@vibeform/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}

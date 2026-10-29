@@ -1,0 +1,23 @@
+{
+  "name": "mcp",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsdown",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vibeform/db": "workspace:*",
+    "evlog": "catalog:",
+    "hono": "^4.13.7",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "@vibeform/config": "workspace:*",
+    "@vibeform/infra": "workspace:*",
+    "tsdown": "^0.23.0",
+    "typescript": "catalog:"
+  }
+}

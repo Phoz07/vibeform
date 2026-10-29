@@ -4,9 +4,15 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import "varlock/auto-load";
 
-export const db = Cloudflare.D1.Database("database", {
-  migrations: "../../packages/db/src/migrations",
+export const definitionsDb = Cloudflare.D1.Database("definitions-database", {
+  migrations: "../../packages/db/src/migrations/definitions",
 });
+
+export const responsesDb = Cloudflare.D1.Database("responses-database", {
+  migrations: "../../packages/db/src/migrations/responses",
+});
+
+export const attachments = Cloudflare.R2.Bucket("attachments");
 
 export const server = Cloudflare.Worker("server", {
   main: "../../apps/server/src/index.ts",
@@ -14,7 +20,10 @@ export const server = Cloudflare.Worker("server", {
     flags: ["nodejs_compat"],
   },
   env: {
-    DB: db,
+    DEFINITIONS_DB: definitionsDb,
+    RESPONSES_DB: responsesDb,
+    ATTACHMENTS: attachments,
+    DB: definitionsDb,
     CORS_ORIGIN: Config.String("CORS_ORIGIN"),
     BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
     BETTER_AUTH_URL: Cloudflare.Worker.URL,
@@ -24,7 +33,21 @@ export const server = Cloudflare.Worker("server", {
   },
 });
 
+export const mcp = Cloudflare.Worker("mcp", {
+  main: "../../apps/mcp/src/index.ts",
+  compatibility: {
+    flags: ["nodejs_compat"],
+  },
+  env: {
+    DEFINITIONS_DB: definitionsDb,
+  },
+  dev: {
+    port: 3002,
+  },
+});
+
 export type ServerEnv = Cloudflare.InferEnv<typeof server>;
+export type McpEnv = Cloudflare.InferEnv<typeof mcp>;
 
 export default Alchemy.Stack(
   "vibeform",
@@ -34,6 +57,7 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const serverWorker = yield* server;
+    const mcpWorker = yield* mcp;
     const webWorker = yield* Cloudflare.Website.StaticSite("web", {
       cwd: "../../apps/web",
       command: "pnpm run build:cloudflare",
@@ -48,6 +72,7 @@ export default Alchemy.Stack(
       env: {
         IMAGES: Cloudflare.Images.Images(),
         NEXT_PUBLIC_SERVER_URL: serverWorker.url.as<string>(),
+        NEXT_PUBLIC_MCP_URL: mcpWorker.url.as<string>(),
       },
       dev: {
         command: "pnpm run dev:bare",
@@ -58,6 +83,7 @@ export default Alchemy.Stack(
     return {
       web: webWorker.url,
       server: serverWorker.url,
+      mcp: mcpWorker.url,
     };
   }),
 );

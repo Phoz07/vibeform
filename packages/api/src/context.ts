@@ -1,7 +1,11 @@
+/// <reference types="@cloudflare/workers-types" />
 import type { Session } from "@vibeform/auth";
-import type { Database } from "@vibeform/db";
+import type { DefinitionsDatabase, ResponsesDatabase } from "@vibeform/db";
 
 export type Context = {
   session: Session | null;
-  db: Database;
+  db: DefinitionsDatabase;
+  definitionsDb: DefinitionsDatabase;
+  responsesDb?: ResponsesDatabase;
+  attachments?: R2Bucket;
 };

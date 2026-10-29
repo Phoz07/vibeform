@@ -7,7 +7,9 @@
   },
   "scripts": {
     "check-types": "tsc --noEmit",
-    "db:generate": "drizzle-kit generate",
+    "db:generate:definitions": "drizzle-kit generate --config=drizzle.definitions.config.ts",
+    "db:generate:responses": "drizzle-kit generate --config=drizzle.responses.config.ts",
+    "db:generate": "pnpm run db:generate:definitions && pnpm run db:generate:responses",
     "db:migrate:deploy": "drizzle-kit migrate"
   },
   "dependencies": {
