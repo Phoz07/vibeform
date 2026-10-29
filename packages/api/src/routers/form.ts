@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import type { Context } from "../context";
@@ -77,7 +77,9 @@ export const formRouter = router({
 				});
 			}
 
-			const { responsesSchema } = await import("@vibeform/db");
+			const { definitionsSchema, responsesSchema } = await import(
+				"@vibeform/db"
+			);
 			const { form, fields } = await getPublishedForm(ctx, input.slug);
 			const fieldById = new Map(fields.map((field) => [field.id, field]));
 			const submittedFieldIds = new Set<string>();
@@ -174,7 +176,6 @@ export const formRouter = router({
 					})),
 				);
 			}
-
 			const answerRows = await ctx.responsesDb
 				.select()
 				.from(responsesSchema.answers)
@@ -194,6 +195,12 @@ export const formRouter = router({
 					});
 				}
 			}
+			await ctx.definitionsDb
+				.update(definitionsSchema.forms)
+				.set({
+					responseCount: sql`${definitionsSchema.forms.responseCount} + 1`,
+				})
+				.where(eq(definitionsSchema.forms.id, form.id));
 
 			return { responseId };
 		}),

@@ -1,0 +1,1 @@
+ALTER TABLE `forms` ADD `response_count` integer DEFAULT 0 NOT NULL;

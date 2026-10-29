@@ -1,23 +1,449 @@
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { z } from "zod";
 
-const app = new Hono();
+import { createDefinitionsDb, definitionsSchema } from "@vibeform/db";
+import { FieldTypeSchema, validateFieldConfig } from "@vibeform/api";
+import { hashMcpToken } from "@vibeform/api/utils/mcp-token";
+import { VibeTokensSchema } from "@vibeform/api/schema/vibe";
+
+type Bindings = { DEFINITIONS_DB: D1Database };
+type Auth = { ownerId: string; scopes: string[]; tokenId: string };
+type RpcRequest = {
+	jsonrpc?: string;
+	id?: string | number | null;
+	method?: string;
+	params?: Record<string, unknown>;
+};
+
+const app = new Hono<{ Bindings: Bindings }>();
 
 app.use(
-  "/*",
-  cors({
-    origin: "*",
-    allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
-  }),
+	"/*",
+	cors({
+		origin: "*",
+		allowMethods: ["GET", "POST", "OPTIONS"],
+		allowHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+	}),
 );
 
-app.get("/", (c) => {
-  return c.json({ service: "vibeform-mcp", status: "running" });
+const toolDefinitions = [
+	{
+		name: "list_forms",
+		description: "List the owner's forms.",
+		inputSchema: { type: "object", properties: {} },
+	},
+	{
+		name: "get_form_definition",
+		description: "Read a form and its active fields.",
+		inputSchema: {
+			type: "object",
+			properties: { formId: { type: "string" } },
+			required: ["formId"],
+		},
+	},
+	{
+		name: "get_response_count",
+		description: "Read an aggregate response count without respondent data.",
+		inputSchema: {
+			type: "object",
+			properties: { formId: { type: "string" } },
+			required: ["formId"],
+		},
+	},
+	{
+		name: "create_form",
+		description: "Create a draft form.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				title: { type: "string" },
+				description: { type: "string" },
+			},
+			required: ["title"],
+		},
+	},
+	{
+		name: "add_field",
+		description: "Add a field to a draft form.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				formId: { type: "string" },
+				type: { type: "string" },
+				label: { type: "string" },
+				required: { type: "boolean" },
+				config: { type: "object" },
+			},
+			required: ["formId", "type", "label"],
+		},
+	},
+	{
+		name: "update_field",
+		description: "Update a field definition.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				fieldId: { type: "string" },
+				label: { type: "string" },
+				required: { type: "boolean" },
+				config: { type: "object" },
+			},
+			required: ["fieldId"],
+		},
+	},
+	{
+		name: "remove_field",
+		description: "Soft-delete a field.",
+		inputSchema: {
+			type: "object",
+			properties: { fieldId: { type: "string" } },
+			required: ["fieldId"],
+		},
+	},
+	{
+		name: "reorder_fields",
+		description: "Set field order.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				formId: { type: "string" },
+				fieldIds: { type: "array", items: { type: "string" } },
+			},
+			required: ["formId", "fieldIds"],
+		},
+	},
+	{
+		name: "set_vibe",
+		description: "Set whitelisted form design tokens.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				formId: { type: "string" },
+				vibeTokens: { type: "object" },
+			},
+			required: ["formId", "vibeTokens"],
+		},
+	},
+];
+
+function rpcError(id: RpcRequest["id"], code: number, message: string) {
+	return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+async function authenticate(c: {
+	req: { header(name: string): string | undefined };
+	env: Bindings;
+}) {
+	const header = c.req.header("authorization");
+	const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
+	if (!token) return null;
+	const db = createDefinitionsDb(c.env);
+	const tokenHash = await hashMcpToken(token);
+	const [record] = await db
+		.select()
+		.from(definitionsSchema.mcpTokens)
+		.where(eq(definitionsSchema.mcpTokens.tokenHash, tokenHash));
+	if (!record || (record.expiresAt && record.expiresAt.getTime() <= Date.now()))
+		return null;
+	await db
+		.update(definitionsSchema.mcpTokens)
+		.set({ lastUsedAt: new Date() })
+		.where(eq(definitionsSchema.mcpTokens.id, record.id));
+	return {
+		ownerId: record.ownerId,
+		scopes: record.scopes,
+		tokenId: record.id,
+	} satisfies Auth;
+}
+
+function requireScope(auth: Auth, scope: "forms:read" | "forms:write") {
+	return (
+		auth.scopes.includes(scope) ||
+		(scope === "forms:read" && auth.scopes.includes("forms:write"))
+	);
+}
+
+async function ownedForm(
+	db: ReturnType<typeof createDefinitionsDb>,
+	ownerId: string,
+	formId: string,
+) {
+	const [form] = await db
+		.select()
+		.from(definitionsSchema.forms)
+		.where(
+			and(
+				eq(definitionsSchema.forms.id, formId),
+				eq(definitionsSchema.forms.ownerId, ownerId),
+			),
+		);
+	return form;
+}
+
+async function callTool(
+	db: ReturnType<typeof createDefinitionsDb>,
+	auth: Auth,
+	name: string,
+	args: Record<string, unknown>,
+) {
+	const readOnly = [
+		"list_forms",
+		"get_form_definition",
+		"get_response_count",
+	].includes(name);
+	if (!requireScope(auth, readOnly ? "forms:read" : "forms:write")) {
+		throw new Error("Insufficient MCP token scope");
+	}
+
+	if (name === "list_forms") {
+		return db
+			.select()
+			.from(definitionsSchema.forms)
+			.where(eq(definitionsSchema.forms.ownerId, auth.ownerId));
+	}
+	if (name === "get_form_definition" || name === "get_response_count") {
+		const formId = z.string().parse(args.formId);
+		const form = await ownedForm(db, auth.ownerId, formId);
+		if (!form) throw new Error("Form not found");
+		if (name === "get_response_count")
+			return { formId, responseCount: form.responseCount };
+		const fields = await db
+			.select()
+			.from(definitionsSchema.fields)
+			.where(
+				and(
+					eq(definitionsSchema.fields.formId, formId),
+					isNull(definitionsSchema.fields.deletedAt),
+				),
+			)
+			.orderBy(asc(definitionsSchema.fields.position));
+		return { ...form, fields };
+	}
+	if (name === "create_form") {
+		const title = z.string().min(1).max(255).parse(args.title);
+		const [form] = await db
+			.insert(definitionsSchema.forms)
+			.values({
+				id: crypto.randomUUID(),
+				ownerId: auth.ownerId,
+				title,
+				description:
+					typeof args.description === "string" ? args.description : undefined,
+				slug: `draft-${crypto.randomUUID().slice(0, 12)}`,
+				status: "draft",
+				version: 1,
+			})
+			.returning();
+		return form;
+	}
+	if (name === "add_field") {
+		const formId = z.string().parse(args.formId);
+		const form = await ownedForm(db, auth.ownerId, formId);
+		if (!form) throw new Error("Form not found");
+		const type = FieldTypeSchema.parse(args.type);
+		const config = validateFieldConfig(type, args.config);
+		const existing = await db
+			.select()
+			.from(definitionsSchema.fields)
+			.where(
+				and(
+					eq(definitionsSchema.fields.formId, formId),
+					isNull(definitionsSchema.fields.deletedAt),
+				),
+			);
+		const [field] = await db
+			.insert(definitionsSchema.fields)
+			.values({
+				id: crypto.randomUUID(),
+				formId,
+				type,
+				label: z.string().min(1).max(255).parse(args.label),
+				required: args.required === true,
+				position: existing.length,
+				config: JSON.stringify(config),
+			})
+			.returning();
+		return field;
+	}
+	if (name === "update_field") {
+		const fieldId = z.string().parse(args.fieldId);
+		const [field] = await db
+			.select()
+			.from(definitionsSchema.fields)
+			.where(
+				and(
+					eq(definitionsSchema.fields.id, fieldId),
+					isNull(definitionsSchema.fields.deletedAt),
+				),
+			);
+		if (!field || !(await ownedForm(db, auth.ownerId, field.formId)))
+			throw new Error("Field not found");
+		const update: Partial<typeof definitionsSchema.fields.$inferInsert> = {};
+		if (typeof args.label === "string")
+			update.label = z.string().min(1).max(255).parse(args.label);
+		if (typeof args.required === "boolean") update.required = args.required;
+		if (args.config !== undefined)
+			update.config = JSON.stringify(
+				validateFieldConfig(field.type, args.config),
+			);
+		const [updated] = await db
+			.update(definitionsSchema.fields)
+			.set(update)
+			.where(eq(definitionsSchema.fields.id, fieldId))
+			.returning();
+		return updated;
+	}
+	if (name === "remove_field") {
+		const fieldId = z.string().parse(args.fieldId);
+		const [field] = await db
+			.select()
+			.from(definitionsSchema.fields)
+			.where(
+				and(
+					eq(definitionsSchema.fields.id, fieldId),
+					isNull(definitionsSchema.fields.deletedAt),
+				),
+			);
+		if (!field || !(await ownedForm(db, auth.ownerId, field.formId)))
+			throw new Error("Field not found");
+		const [removed] = await db
+			.update(definitionsSchema.fields)
+			.set({ deletedAt: new Date() })
+			.where(eq(definitionsSchema.fields.id, fieldId))
+			.returning();
+		return removed;
+	}
+	if (name === "reorder_fields") {
+		const formId = z.string().parse(args.formId);
+		if (!(await ownedForm(db, auth.ownerId, formId)))
+			throw new Error("Form not found");
+		const fieldIds = z.array(z.string()).parse(args.fieldIds);
+		const activeFields = await db
+			.select({ id: definitionsSchema.fields.id })
+			.from(definitionsSchema.fields)
+			.where(
+				and(
+					eq(definitionsSchema.fields.formId, formId),
+					isNull(definitionsSchema.fields.deletedAt),
+				),
+			);
+		const activeIds = new Set(activeFields.map((field) => field.id));
+		if (
+			fieldIds.length !== activeIds.size ||
+			new Set(fieldIds).size !== fieldIds.length ||
+			fieldIds.some((fieldId) => !activeIds.has(fieldId))
+		) {
+			throw new Error("fieldIds must contain every active field exactly once");
+		}
+		for (const [position, fieldId] of fieldIds.entries()) {
+			await db
+				.update(definitionsSchema.fields)
+				.set({ position })
+				.where(
+					and(
+						eq(definitionsSchema.fields.id, fieldId),
+						eq(definitionsSchema.fields.formId, formId),
+					),
+				);
+		}
+		return { success: true };
+	}
+	if (name === "set_vibe") {
+		const formId = z.string().parse(args.formId);
+		if (!(await ownedForm(db, auth.ownerId, formId)))
+			throw new Error("Form not found");
+		const vibeTokens = VibeTokensSchema.parse(args.vibeTokens);
+		const [updated] = await db
+			.update(definitionsSchema.forms)
+			.set({ vibeTokens: JSON.stringify(vibeTokens) })
+			.where(eq(definitionsSchema.forms.id, formId))
+			.returning();
+		return updated;
+	}
+	throw new Error(`Unknown tool: ${name}`);
+}
+
+app.post("/mcp", async (c) => {
+	const request = (await c.req.json()) as RpcRequest;
+	const auth = await authenticate(c);
+	if (!auth) return c.json(rpcError(request.id, -32001, "Unauthorized"), 401);
+	if (request.method === "initialize") {
+		return c.json({
+			jsonrpc: "2.0",
+			id: request.id ?? null,
+			result: {
+				protocolVersion: "2025-03-26",
+				capabilities: { tools: {} },
+				serverInfo: { name: "vibeform", version: "1.0.0" },
+			},
+		});
+	}
+	if (request.method === "notifications/initialized") return c.body(null, 202);
+	if (request.method === "tools/list")
+		return c.json({
+			jsonrpc: "2.0",
+			id: request.id ?? null,
+			result: { tools: toolDefinitions },
+		});
+	if (request.method === "tools/call") {
+		const name = z.string().parse(request.params?.name);
+		const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
+		try {
+			const result = await callTool(
+				createDefinitionsDb(c.env),
+				auth,
+				name,
+				args,
+			);
+			return c.json({
+				jsonrpc: "2.0",
+				id: request.id ?? null,
+				result: { content: [{ type: "text", text: JSON.stringify(result) }] },
+			});
+		} catch (error) {
+			return c.json({
+				jsonrpc: "2.0",
+				id: request.id ?? null,
+				result: {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text:
+								error instanceof Error
+									? error.message
+									: "Tool execution failed",
+						},
+					],
+				},
+			});
+		}
+	}
+	return c.json(rpcError(request.id, -32601, "Method not found"), 404);
 });
 
-app.get("/health", (c) => {
-  return c.text("OK");
+app.get("/mcp", async (c) => {
+	const auth = await authenticate(c);
+	if (!auth) return c.json(rpcError(null, -32001, "Unauthorized"), 401);
+	const stream = new ReadableStream({
+		start(controller) {
+			controller.enqueue(
+				new TextEncoder().encode("event: endpoint\ndata: /mcp\n\n"),
+			);
+		},
+	});
+	return new Response(stream, {
+		headers: {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		},
+	});
 });
+
+app.get("/", (c) => c.json({ service: "vibeform-mcp", status: "running" }));
+app.get("/health", (c) => c.text("OK"));
 
 export default app;
