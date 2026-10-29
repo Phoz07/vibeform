@@ -1,4 +1,5 @@
 import { protectedProcedure, publicProcedure, router } from "../index";
+import { formRouter } from "./form";
 
 export const appRouter = router({
   healthCheck: publicProcedure.query(() => {
@@ -10,5 +11,7 @@ export const appRouter = router({
       user: ctx.session.user,
     };
   }),
+  form: formRouter,
 });
+
 export type AppRouter = typeof appRouter;

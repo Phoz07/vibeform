@@ -23,3 +23,6 @@ export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
     },
   });
 });
+
+export * from "./schema/field";
+export * from "./routers/index";
