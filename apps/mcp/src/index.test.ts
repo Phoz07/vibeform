@@ -39,13 +39,21 @@ describe("MCP worker HTTP boundary", () => {
 		expect(body.error?.code).toBe(-32001);
 	});
 
-	it("does not declare response or attachment worker bindings", async () => {
-		const source = await readFile(
-			"apps/mcp/src/index.ts",
-			"utf8",
-		);
+	it("rejects unauthenticated MCP sessions", async () => {
+		const response = await app.request("/mcp", undefined, {
+			DEFINITIONS_DB: {} as D1Database,
+		});
 
+		expect(response.status).toBe(401);
+	});
+
+	it("keeps response data and file storage outside the MCP worker", async () => {
+		const source = await readFile("apps/mcp/src/index.ts", "utf8");
+
+		expect(source).toContain("type Bindings = { DEFINITIONS_DB: D1Database }");
 		expect(source).not.toContain("RESPONSES_DB");
 		expect(source).not.toContain("ATTACHMENTS");
+		expect(source).not.toMatch(/name:\s*"(?:get|list|read)_responses?"/);
+		expect(source).not.toContain("r2Key");
 	});
 });
