@@ -82,6 +82,9 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 	const formQuery = useQuery(trpc.form.getPublic.queryOptions({ slug }));
 	const [values, setValues] = useState<Record<string, Value>>({});
 	const [errors, setErrors] = useState<Record<string, string>>({});
+	const [uploadProgress, setUploadProgress] = useState<Record<string, number>>(
+		{},
+	);
 	const [submitted, setSubmitted] = useState(false);
 	const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL?.replace(/\/$/, "");
 
@@ -153,33 +156,53 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 		const body = new FormData();
 		body.append("file", file);
 		body.append("fieldId", fieldId);
-		try {
-			const response = await fetch(
-				`${serverUrl}/f/${encodeURIComponent(slug)}/upload`,
-				{
-					method: "POST",
-					body,
-					credentials: "include",
-				},
-			);
-			const result = (await response.json()) as {
-				token?: string;
-				attachmentId?: string;
-				error?: string;
+		await new Promise<void>((resolve) => {
+			const request = new XMLHttpRequest();
+			request.open("POST", `${serverUrl}/f/${encodeURIComponent(slug)}/upload`);
+			request.withCredentials = true;
+			request.upload.onprogress = (event) => {
+				if (event.lengthComputable) {
+					setUploadProgress((current) => ({
+						...current,
+						[fieldId]: Math.round((event.loaded / event.total) * 100),
+					}));
+				}
 			};
-			if (!response.ok || !result.token || !result.attachmentId) {
-				throw new Error(result.error || "Unable to upload file");
-			}
-			setValue(fieldId, {
-				token: result.token,
-				attachmentId: result.attachmentId,
-				fileName: file.name,
-			});
-		} catch (error) {
-			toast.error(
-				error instanceof Error ? error.message : "Unable to upload file",
-			);
-		}
+			request.onload = () => {
+				try {
+					const result = JSON.parse(request.responseText) as {
+						token?: string;
+						attachmentId?: string;
+						error?: string;
+					};
+					if (
+						request.status < 200 ||
+						request.status >= 300 ||
+						!result.token ||
+						!result.attachmentId
+					) {
+						throw new Error(result.error || "Unable to upload file");
+					}
+					setValue(fieldId, {
+						token: result.token,
+						attachmentId: result.attachmentId,
+						fileName: file.name,
+					});
+					setUploadProgress((current) => ({ ...current, [fieldId]: 100 }));
+				} catch (error) {
+					toast.error(
+						error instanceof Error ? error.message : "Unable to upload file",
+					);
+				} finally {
+					resolve();
+				}
+			};
+			request.onerror = () => {
+				toast.error("Unable to upload file");
+				resolve();
+			};
+			request.send(body);
+		});
 	};
 
 	const validate = () => {
@@ -389,19 +412,41 @@ export default function PublicFormClient({ slug }: { slug: string }) {
 											/>
 										)}
 										{field.type === "file_upload" && (
-											<Input
-												id={field.id}
-												type="file"
-												accept={
-													Array.isArray(config.allowedMimeTypes)
-														? config.allowedMimeTypes.map(String).join(",")
-														: undefined
-												}
-												onChange={(event) => {
-													const file = event.target.files?.[0];
+											<div
+												className="flex flex-col gap-2 rounded-md border border-dashed p-4 text-sm"
+												onDragOver={(event) => event.preventDefault()}
+												onDrop={(event) => {
+													event.preventDefault();
+													const file = event.dataTransfer.files[0];
 													if (file) void uploadFile(field.id, file);
 												}}
-											/>
+											>
+												<p className="text-muted-foreground">
+													Drop a file here or choose one.
+												</p>
+												<Input
+													id={field.id}
+													type="file"
+													accept={
+														Array.isArray(config.allowedMimeTypes)
+															? config.allowedMimeTypes.map(String).join(",")
+															: undefined
+													}
+													onChange={(event) => {
+														const file = event.target.files?.[0];
+														if (file) void uploadFile(field.id, file);
+													}}
+												/>
+												{uploadProgress[field.id] !== undefined &&
+													uploadProgress[field.id] < 100 && (
+														<progress
+															className="h-2 w-full"
+															max={100}
+															value={uploadProgress[field.id]}
+															aria-label={`Uploading ${uploadProgress[field.id]} percent`}
+														/>
+													)}
+											</div>
 										)}
 										{field.type === "file_upload" &&
 											typeof value === "object" &&

@@ -26,6 +26,15 @@ export default function ResponsesPageClient({ formId }: { formId: string }) {
 			onError: (error) => toast.error(error.message),
 		}),
 	);
+	const deleteForm = useMutation(
+		trpc.form.delete.mutationOptions({
+			onSuccess: () => {
+				toast.success("Form and all associated data deleted");
+				window.location.assign("/dashboard");
+			},
+			onError: (error) => toast.error(error.message),
+		}),
+	);
 
 	return (
 		<main className="container mx-auto max-w-5xl space-y-6 px-4 py-8">
@@ -36,9 +45,26 @@ export default function ResponsesPageClient({ formId }: { formId: string }) {
 						🔒 Private owner view · physical data-plane isolation active
 					</p>
 				</div>
-				<Button variant="outline" onClick={() => history.back()}>
-					Back
-				</Button>
+				<div className="flex gap-2">
+					<Button variant="outline" onClick={() => history.back()}>
+						Back
+					</Button>
+					<Button
+						variant="destructive"
+						disabled={deleteForm.isPending}
+						onClick={() => {
+							if (
+								window.confirm(
+									"Delete this form, all responses, and attachments permanently?",
+								)
+							) {
+								deleteForm.mutate({ id: formId });
+							}
+						}}
+					>
+						Delete form
+					</Button>
+				</div>
 			</div>
 			<Card>
 				<CardHeader>
