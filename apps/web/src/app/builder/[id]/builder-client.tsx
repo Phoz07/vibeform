@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 import { authClient } from "@/lib/auth-client";
 import { useTRPC } from "@/utils/trpc";
-import type { FieldType } from "@vibeform/api";
+import { DEFAULT_VIBE, type FieldType, PRESET_VIBES, type VibeTokens } from "@vibeform/api";
 import { Button, buttonVariants } from "@vibeform/ui/components/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@vibeform/ui/components/card";
 import { Checkbox } from "@vibeform/ui/components/checkbox";
@@ -43,6 +43,22 @@ export default function BuilderClient({
   const [isAddingField, setIsAddingField] = useState(false);
 
   const form = formQuery.data;
+
+  const currentVibe: VibeTokens = form?.vibeTokens
+    ? typeof form.vibeTokens === "string"
+      ? JSON.parse(form.vibeTokens)
+      : (form.vibeTokens as VibeTokens)
+    : DEFAULT_VIBE;
+
+  const setVibeMutation = useMutation(
+    trpc.form.setVibe.mutationOptions({
+      onSuccess: () => {
+        toast.success("Vibe updated!");
+        queryClient.invalidateQueries(trpc.form.get.queryFilter({ id: formId }));
+      },
+      onError: (err) => toast.error(err.message || "Failed to update vibe"),
+    }),
+  );
 
   const addFieldMutation = useMutation(
     trpc.form.addField.mutationOptions({
@@ -377,6 +393,41 @@ export default function BuilderClient({
           <div className="space-y-4">
             <Card>
               <CardHeader>
+                <CardTitle className="text-base">Vibe & Theme</CardTitle>
+                <CardDescription>
+                  Choose a vibe for your form styling
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {Object.entries(PRESET_VIBES).map(([key, vibe]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setVibeMutation.mutate({ formId, vibeTokens: vibe })}
+                    className={`w-full p-2.5 rounded-md border text-left text-xs flex items-center justify-between transition ${
+                      currentVibe.preset === key
+                        ? "border-primary bg-primary/10 font-semibold"
+                        : "hover:bg-muted"
+                    }`}
+                  >
+                    <span className="capitalize">{key}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className="inline-block w-4 h-4 rounded-full border"
+                        style={{ backgroundColor: vibe.primaryColor }}
+                      />
+                      <span
+                        className="inline-block w-4 h-4 rounded-full border"
+                        style={{ backgroundColor: vibe.backgroundColor }}
+                      />
+                    </div>
+                  </button>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
                 <CardTitle className="text-base">Form Details</CardTitle>
                 <CardDescription>
                   Identity & slug configuration
@@ -402,14 +453,49 @@ export default function BuilderClient({
       ) : (
         /* Live Interactive Preview */
         <div className="max-w-2xl mx-auto py-4">
-          <Card className="shadow-lg border-2">
+          <Card
+            className="shadow-xl transition-all border-2"
+            style={{
+              backgroundColor: currentVibe.backgroundColor,
+              color: currentVibe.textColor,
+              borderRadius:
+                currentVibe.borderRadius === "none"
+                  ? "0px"
+                  : currentVibe.borderRadius === "sm"
+                    ? "4px"
+                    : currentVibe.borderRadius === "md"
+                      ? "8px"
+                      : currentVibe.borderRadius === "lg"
+                        ? "16px"
+                        : "9999px",
+              fontFamily:
+                currentVibe.fontFamily === "mono"
+                  ? "monospace"
+                  : currentVibe.fontFamily === "serif"
+                    ? "Georgia, serif"
+                    : "sans-serif",
+            }}
+          >
             <CardHeader className="space-y-2 border-b pb-6">
-              <span className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                Live Interactive Preview
-              </span>
-              <CardTitle className="text-2xl">{form.title}</CardTitle>
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                  Live Preview
+                </span>
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full font-mono uppercase"
+                  style={{
+                    backgroundColor: currentVibe.primaryColor,
+                    color: "#ffffff",
+                  }}
+                >
+                  Vibe: {currentVibe.preset}
+                </span>
+              </div>
+              <CardTitle className="text-2xl" style={{ color: currentVibe.textColor }}>
+                {form.title}
+              </CardTitle>
               {form.description && (
-                <CardDescription className="text-base">
+                <CardDescription className="text-base" style={{ opacity: 0.8 }}>
                   {form.description}
                 </CardDescription>
               )}
@@ -513,7 +599,14 @@ export default function BuilderClient({
 
               {form.fields.length > 0 && (
                 <div className="pt-4 border-t">
-                  <Button disabled className="w-full sm:w-auto">
+                  <Button
+                    disabled
+                    className="w-full sm:w-auto"
+                    style={{
+                      backgroundColor: currentVibe.primaryColor,
+                      color: "#ffffff",
+                    }}
+                  >
                     Submit (Preview Mode)
                   </Button>
                 </div>

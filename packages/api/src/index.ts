@@ -25,4 +25,5 @@ export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
 });
 
 export * from "./schema/field";
+export * from "./schema/vibe";
 export * from "./routers/index";

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { protectedProcedure, router } from "../index";
 import { FieldTypeSchema, validateFieldConfig } from "../schema/field";
+import { VibeTokensSchema } from "../schema/vibe";
 import { generateSlug } from "../utils/slug";
 
 export const formRouter = router({
@@ -331,5 +332,38 @@ export const formRouter = router({
         .returning();
 
       return softDeleted;
+    }),
+
+  setVibe: protectedProcedure
+    .input(
+      z.object({
+        formId: z.string(),
+        vibeTokens: VibeTokensSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { definitionsSchema } = await import("@vibeform/db");
+
+      const [form] = await ctx.definitionsDb
+        .select()
+        .from(definitionsSchema.forms)
+        .where(
+          and(
+            eq(definitionsSchema.forms.id, input.formId),
+            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+          ),
+        );
+
+      if (!form) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+      }
+
+      const [updated] = await ctx.definitionsDb
+        .update(definitionsSchema.forms)
+        .set({ vibeTokens: JSON.stringify(input.vibeTokens) })
+        .where(eq(definitionsSchema.forms.id, input.formId))
+        .returning();
+
+      return updated;
     }),
 });
