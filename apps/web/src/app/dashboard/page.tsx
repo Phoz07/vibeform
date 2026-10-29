@@ -1,27 +1,32 @@
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+"use client";
 
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+
+import Loader from "@/components/loader";
 import { authClient } from "@/lib/auth-client";
 
 import Dashboard from "./dashboard";
 
-export default async function DashboardPage() {
-  const session = await authClient.getSession({
-    fetchOptions: {
-      headers: await headers(),
-      throw: true,
-    },
-  });
+export default function DashboardPage() {
+	const router = useRouter();
+	const { data: session, isPending } = authClient.useSession();
 
-  if (!session?.user) {
-    redirect("/login");
-  }
+	useEffect(() => {
+		if (!isPending && !session?.user) {
+			router.replace("/login");
+		}
+	}, [isPending, router, session?.user]);
 
-  return (
-    <div>
-      <h1>Dashboard</h1>
-      <p>Welcome {session.user.name}</p>
-      <Dashboard session={session} />
-    </div>
-  );
+	if (isPending || !session?.user) {
+		return <Loader />;
+	}
+
+	return (
+		<div>
+			<h1>Dashboard</h1>
+			<p>Welcome {session.user.name}</p>
+			<Dashboard session={session} />
+		</div>
+	);
 }
