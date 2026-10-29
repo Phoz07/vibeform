@@ -2,401 +2,548 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { protectedProcedure, router } from "../index";
-import { FieldTypeSchema, validateFieldConfig } from "../schema/field";
+import type { Context } from "../context";
+import { protectedProcedure, publicProcedure, router } from "../index";
+import {
+	FieldTypeSchema,
+	validateAnswerValue,
+	validateFieldConfig,
+} from "../schema/field";
 import { VibeTokensSchema } from "../schema/vibe";
 import { generateSlug } from "../utils/slug";
 
+async function getPublishedForm(ctx: Context, slug: string) {
+	const { definitionsSchema } = await import("@vibeform/db");
+	const [form] = await ctx.definitionsDb
+		.select()
+		.from(definitionsSchema.forms)
+		.where(
+			and(
+				eq(definitionsSchema.forms.slug, slug),
+				eq(definitionsSchema.forms.status, "published"),
+			),
+		);
+
+	if (!form) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "Published form not found",
+		});
+	}
+
+	const fields = await ctx.definitionsDb
+		.select()
+		.from(definitionsSchema.fields)
+		.where(
+			and(
+				eq(definitionsSchema.fields.formId, form.id),
+				isNull(definitionsSchema.fields.deletedAt),
+			),
+		)
+		.orderBy(asc(definitionsSchema.fields.position));
+
+	return { form, fields };
+}
+
 export const formRouter = router({
-  list: protectedProcedure.query(async ({ ctx }) => {
-    const { definitionsSchema } = await import("@vibeform/db");
-    const formsList = await ctx.definitionsDb
-      .select()
-      .from(definitionsSchema.forms)
-      .where(eq(definitionsSchema.forms.ownerId, ctx.session.user.id))
-      .orderBy(desc(definitionsSchema.forms.updatedAt));
+	getPublic: publicProcedure
+		.input(z.object({ slug: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			const { form, fields } = await getPublishedForm(ctx, input.slug);
+			return { ...form, fields };
+		}),
 
-    return formsList;
-  }),
+	submit: publicProcedure
+		.input(
+			z.object({
+				slug: z.string().min(1),
+				answers: z.array(
+					z.object({
+						fieldId: z.string().min(1),
+						value: z.unknown(),
+					}),
+				),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			if (!ctx.responsesDb) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Response storage is unavailable",
+				});
+			}
 
-  create: protectedProcedure
-    .input(
-      z.object({
-        title: z.string().min(1).max(255),
-        description: z.string().max(1000).optional(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
-      const formId = crypto.randomUUID();
-      const slug = generateSlug();
+			const { responsesSchema } = await import(
+				"@vibeform/db"
+			);
+			const { form, fields } = await getPublishedForm(ctx, input.slug);
+			const fieldById = new Map(fields.map((field) => [field.id, field]));
+			const submittedFieldIds = new Set<string>();
 
-      const [newForm] = await ctx.definitionsDb
-        .insert(definitionsSchema.forms)
-        .values({
-          id: formId,
-          ownerId: ctx.session.user.id,
-          title: input.title,
-          description: input.description,
-          slug,
-          status: "draft",
-          version: 1,
-        })
-        .returning();
+			for (const answer of input.answers) {
+				const field = fieldById.get(answer.fieldId);
+				if (!field || submittedFieldIds.has(answer.fieldId)) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Invalid answer field.",
+					});
+				}
+				submittedFieldIds.add(answer.fieldId);
 
-      return newForm;
-    }),
+				try {
+					const result = validateAnswerValue(
+						field.type,
+						field.config,
+						answer.value,
+						field.required,
+					);
+					if (!result.valid) {
+						throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
+					}
+				} catch (error) {
+					if (error instanceof TRPCError) throw error;
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Invalid answer.",
+					});
+				}
+			}
 
-  get: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			for (const field of fields) {
+				if (field.required && !submittedFieldIds.has(field.id)) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "All required questions must be answered.",
+					});
+				}
+			}
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.id),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			const responseId = crypto.randomUUID();
+			await ctx.responsesDb.insert(responsesSchema.responses).values({
+				id: responseId,
+				formId: form.id,
+			});
+			if (input.answers.length > 0) {
+				await ctx.responsesDb.insert(responsesSchema.answers).values(
+					input.answers.map((answer) => ({
+						id: crypto.randomUUID(),
+						responseId,
+						fieldId: answer.fieldId,
+						value: answer.value,
+					})),
+				);
+			}
 
-      if (!form) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Form not found or access denied",
-        });
-      }
+			return { responseId };
+		}),
 
-      const activeFields = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.fields)
-        .where(
-          and(
-            eq(definitionsSchema.fields.formId, form.id),
-            isNull(definitionsSchema.fields.deletedAt),
-          ),
-        )
-        .orderBy(asc(definitionsSchema.fields.position));
+	list: protectedProcedure.query(async ({ ctx }) => {
+		const { definitionsSchema } = await import("@vibeform/db");
+		const formsList = await ctx.definitionsDb
+			.select()
+			.from(definitionsSchema.forms)
+			.where(eq(definitionsSchema.forms.ownerId, ctx.session.user.id))
+			.orderBy(desc(definitionsSchema.forms.updatedAt));
 
-      return {
-        ...form,
-        fields: activeFields,
-      };
-    }),
+		return formsList;
+	}),
 
-  update: protectedProcedure
-    .input(
-      z.object({
-        id: z.string(),
-        title: z.string().min(1).max(255).optional(),
-        description: z.string().max(1000).optional(),
-        slug: z
-          .string()
-          .min(3)
-          .max(64)
-          .regex(/^[a-z0-9-]+$/, "Slug must only contain lowercase letters, numbers, and hyphens")
-          .optional(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+	create: protectedProcedure
+		.input(
+			z.object({
+				title: z.string().min(1).max(255),
+				description: z.string().max(1000).optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
+			const formId = crypto.randomUUID();
+			const slug = generateSlug();
 
-      const [existing] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.id),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			const [newForm] = await ctx.definitionsDb
+				.insert(definitionsSchema.forms)
+				.values({
+					id: formId,
+					ownerId: ctx.session.user.id,
+					title: input.title,
+					description: input.description,
+					slug,
+					status: "draft",
+					version: 1,
+				})
+				.returning();
 
-      if (!existing) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-      }
+			return newForm;
+		}),
 
-      const updateData: Partial<typeof definitionsSchema.forms.$inferInsert> = {};
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.description !== undefined) updateData.description = input.description;
-      if (input.slug !== undefined) updateData.slug = input.slug;
+	get: protectedProcedure
+		.input(z.object({ id: z.string() }))
+		.query(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      const [updated] = await ctx.definitionsDb
-        .update(definitionsSchema.forms)
-        .set(updateData)
-        .where(eq(definitionsSchema.forms.id, input.id))
-        .returning();
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.id),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-      return updated;
-    }),
+			if (!form) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Form not found or access denied",
+				});
+			}
 
-  addField: protectedProcedure
-    .input(
-      z.object({
-        formId: z.string(),
-        type: FieldTypeSchema,
-        label: z.string().min(1).max(255),
-        required: z.boolean().default(false),
-        position: z.number().int().optional(),
-        config: z.unknown().optional(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			const activeFields = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.fields)
+				.where(
+					and(
+						eq(definitionsSchema.fields.formId, form.id),
+						isNull(definitionsSchema.fields.deletedAt),
+					),
+				)
+				.orderBy(asc(definitionsSchema.fields.position));
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.formId),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			return {
+				...form,
+				fields: activeFields,
+			};
+		}),
 
-      if (!form) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-      }
+	update: protectedProcedure
+		.input(
+			z.object({
+				id: z.string(),
+				title: z.string().min(1).max(255).optional(),
+				description: z.string().max(1000).optional(),
+				slug: z
+					.string()
+					.min(3)
+					.max(64)
+					.regex(
+						/^[a-z0-9-]+$/,
+						"Slug must only contain lowercase letters, numbers, and hyphens",
+					)
+					.optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      const validatedConfig = validateFieldConfig(input.type, input.config);
+			const [existing] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.id),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-      let position = input.position;
-      if (position === undefined) {
-        const existing = await ctx.definitionsDb
-          .select()
-          .from(definitionsSchema.fields)
-          .where(
-            and(
-              eq(definitionsSchema.fields.formId, input.formId),
-              isNull(definitionsSchema.fields.deletedAt),
-            ),
-          );
-        position = existing.length;
-      }
+			if (!existing) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			}
 
-      const [field] = await ctx.definitionsDb
-        .insert(definitionsSchema.fields)
-        .values({
-          id: crypto.randomUUID(),
-          formId: input.formId,
-          type: input.type,
-          label: input.label,
-          required: input.required,
-          position,
-          config: JSON.stringify(validatedConfig),
-        })
-        .returning();
+			const updateData: Partial<typeof definitionsSchema.forms.$inferInsert> =
+				{};
+			if (input.title !== undefined) updateData.title = input.title;
+			if (input.description !== undefined)
+				updateData.description = input.description;
+			if (input.slug !== undefined) updateData.slug = input.slug;
 
-      return field;
-    }),
+			const [updated] = await ctx.definitionsDb
+				.update(definitionsSchema.forms)
+				.set(updateData)
+				.where(eq(definitionsSchema.forms.id, input.id))
+				.returning();
 
-  updateField: protectedProcedure
-    .input(
-      z.object({
-        fieldId: z.string(),
-        label: z.string().min(1).max(255).optional(),
-        required: z.boolean().optional(),
-        config: z.unknown().optional(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			return updated;
+		}),
 
-      const [field] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.fields)
-        .where(
-          and(
-            eq(definitionsSchema.fields.id, input.fieldId),
-            isNull(definitionsSchema.fields.deletedAt),
-          ),
-        );
+	addField: protectedProcedure
+		.input(
+			z.object({
+				formId: z.string(),
+				type: FieldTypeSchema,
+				label: z.string().min(1).max(255),
+				required: z.boolean().default(false),
+				position: z.number().int().optional(),
+				config: z.unknown().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      if (!field) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Field not found" });
-      }
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-      // Check ownership
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, field.formId),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			if (!form) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			}
 
-      if (!form) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "Access denied" });
-      }
+			const validatedConfig = validateFieldConfig(input.type, input.config);
 
-      const updateData: Partial<typeof definitionsSchema.fields.$inferInsert> = {};
-      if (input.label !== undefined) updateData.label = input.label;
-      if (input.required !== undefined) updateData.required = input.required;
-      if (input.config !== undefined) {
-        const parsed = validateFieldConfig(field.type as any, input.config);
-        updateData.config = JSON.stringify(parsed);
-      }
+			let position = input.position;
+			if (position === undefined) {
+				const existing = await ctx.definitionsDb
+					.select()
+					.from(definitionsSchema.fields)
+					.where(
+						and(
+							eq(definitionsSchema.fields.formId, input.formId),
+							isNull(definitionsSchema.fields.deletedAt),
+						),
+					);
+				position = existing.length;
+			}
 
-      const [updated] = await ctx.definitionsDb
-        .update(definitionsSchema.fields)
-        .set(updateData)
-        .where(eq(definitionsSchema.fields.id, input.fieldId))
-        .returning();
+			const [field] = await ctx.definitionsDb
+				.insert(definitionsSchema.fields)
+				.values({
+					id: crypto.randomUUID(),
+					formId: input.formId,
+					type: input.type,
+					label: input.label,
+					required: input.required,
+					position,
+					config: JSON.stringify(validatedConfig),
+				})
+				.returning();
 
-      return updated;
-    }),
+			return field;
+		}),
 
-  reorderFields: protectedProcedure
-    .input(
-      z.object({
-        formId: z.string(),
-        fieldIds: z.array(z.string()),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+	updateField: protectedProcedure
+		.input(
+			z.object({
+				fieldId: z.string(),
+				label: z.string().min(1).max(255).optional(),
+				required: z.boolean().optional(),
+				config: z.unknown().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.formId),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			const [field] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.fields)
+				.where(
+					and(
+						eq(definitionsSchema.fields.id, input.fieldId),
+						isNull(definitionsSchema.fields.deletedAt),
+					),
+				);
 
-      if (!form) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-      }
+			if (!field) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Field not found" });
+			}
 
-      // Update positions
-      for (let i = 0; i < input.fieldIds.length; i++) {
-        const fieldId = input.fieldIds[i];
-        if (!fieldId) continue;
-        await ctx.definitionsDb
-          .update(definitionsSchema.fields)
-          .set({ position: i })
-          .where(
-            and(
-              eq(definitionsSchema.fields.id, fieldId),
-              eq(definitionsSchema.fields.formId, input.formId),
-            ),
-          );
-      }
+			// Check ownership
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, field.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-      return { success: true };
-    }),
+			if (!form) {
+				throw new TRPCError({ code: "UNAUTHORIZED", message: "Access denied" });
+			}
 
-  removeField: protectedProcedure
-    .input(z.object({ fieldId: z.string() }))
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			const updateData: Partial<typeof definitionsSchema.fields.$inferInsert> =
+				{};
+			if (input.label !== undefined) updateData.label = input.label;
+			if (input.required !== undefined) updateData.required = input.required;
+			if (input.config !== undefined) {
+				const parsed = validateFieldConfig(field.type as any, input.config);
+				updateData.config = JSON.stringify(parsed);
+			}
 
-      const [field] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.fields)
-        .where(
-          and(
-            eq(definitionsSchema.fields.id, input.fieldId),
-            isNull(definitionsSchema.fields.deletedAt),
-          ),
-        );
+			const [updated] = await ctx.definitionsDb
+				.update(definitionsSchema.fields)
+				.set(updateData)
+				.where(eq(definitionsSchema.fields.id, input.fieldId))
+				.returning();
 
-      if (!field) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Field not found" });
-      }
+			return updated;
+		}),
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, field.formId),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+	reorderFields: protectedProcedure
+		.input(
+			z.object({
+				formId: z.string(),
+				fieldIds: z.array(z.string()),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      if (!form) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "Access denied" });
-      }
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-      // Soft delete: set deletedAt
-      const [softDeleted] = await ctx.definitionsDb
-        .update(definitionsSchema.fields)
-        .set({ deletedAt: new Date() })
-        .where(eq(definitionsSchema.fields.id, input.fieldId))
-        .returning();
+			if (!form) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			}
 
-      return softDeleted;
-    }),
+			// Update positions
+			for (let i = 0; i < input.fieldIds.length; i++) {
+				const fieldId = input.fieldIds[i];
+				if (!fieldId) continue;
+				await ctx.definitionsDb
+					.update(definitionsSchema.fields)
+					.set({ position: i })
+					.where(
+						and(
+							eq(definitionsSchema.fields.id, fieldId),
+							eq(definitionsSchema.fields.formId, input.formId),
+						),
+					);
+			}
 
-  setVibe: protectedProcedure
-    .input(
-      z.object({
-        formId: z.string(),
-        vibeTokens: VibeTokensSchema,
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			return { success: true };
+		}),
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.formId),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+	removeField: protectedProcedure
+		.input(z.object({ fieldId: z.string() }))
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      if (!form) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-      }
+			const [field] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.fields)
+				.where(
+					and(
+						eq(definitionsSchema.fields.id, input.fieldId),
+						isNull(definitionsSchema.fields.deletedAt),
+					),
+				);
 
-      const [updated] = await ctx.definitionsDb
-        .update(definitionsSchema.forms)
-        .set({ vibeTokens: JSON.stringify(input.vibeTokens) })
-        .where(eq(definitionsSchema.forms.id, input.formId))
-        .returning();
+			if (!field) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Field not found" });
+			}
 
-      return updated;
-    }),
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, field.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
 
-  setStatus: protectedProcedure
-    .input(
-      z.object({
-        id: z.string(),
-        status: z.enum(["draft", "published", "closed"]),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { definitionsSchema } = await import("@vibeform/db");
+			if (!form) {
+				throw new TRPCError({ code: "UNAUTHORIZED", message: "Access denied" });
+			}
 
-      const [form] = await ctx.definitionsDb
-        .select()
-        .from(definitionsSchema.forms)
-        .where(
-          and(
-            eq(definitionsSchema.forms.id, input.id),
-            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
-          ),
-        );
+			// Soft delete: set deletedAt
+			const [softDeleted] = await ctx.definitionsDb
+				.update(definitionsSchema.fields)
+				.set({ deletedAt: new Date() })
+				.where(eq(definitionsSchema.fields.id, input.fieldId))
+				.returning();
 
-      if (!form) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-      }
+			return softDeleted;
+		}),
 
-      const [updated] = await ctx.definitionsDb
-        .update(definitionsSchema.forms)
-        .set({ status: input.status })
-        .where(eq(definitionsSchema.forms.id, input.id))
-        .returning();
+	setVibe: protectedProcedure
+		.input(
+			z.object({
+				formId: z.string(),
+				vibeTokens: VibeTokensSchema,
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
 
-      return updated;
-    }),
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.formId),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
+
+			if (!form) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			}
+
+			const [updated] = await ctx.definitionsDb
+				.update(definitionsSchema.forms)
+				.set({ vibeTokens: JSON.stringify(input.vibeTokens) })
+				.where(eq(definitionsSchema.forms.id, input.formId))
+				.returning();
+
+			return updated;
+		}),
+
+	setStatus: protectedProcedure
+		.input(
+			z.object({
+				id: z.string(),
+				status: z.enum(["draft", "published", "closed"]),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { definitionsSchema } = await import("@vibeform/db");
+
+			const [form] = await ctx.definitionsDb
+				.select()
+				.from(definitionsSchema.forms)
+				.where(
+					and(
+						eq(definitionsSchema.forms.id, input.id),
+						eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+					),
+				);
+
+			if (!form) {
+				throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+			}
+
+			const allowedTransitions: Record<string, string[]> = {
+				draft: ["published"],
+				published: ["draft", "closed"],
+				closed: ["published"],
+			};
+			if (!allowedTransitions[form.status]?.includes(input.status)) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: `Cannot transition form from ${form.status} to ${input.status}`,
+				});
+			}
+
+			const [updated] = await ctx.definitionsDb
+				.update(definitionsSchema.forms)
+				.set({ status: input.status })
+				.where(eq(definitionsSchema.forms.id, input.id))
+				.returning();
+
+			return updated;
+		}),
 });

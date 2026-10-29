@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { authClient } from "@/lib/auth-client";
@@ -41,8 +41,13 @@ export default function BuilderClient({
   const [newFieldLabel, setNewFieldLabel] = useState("");
   const [newFieldRequired, setNewFieldRequired] = useState(false);
   const [isAddingField, setIsAddingField] = useState(false);
+  const [slug, setSlug] = useState("");
 
   const form = formQuery.data;
+
+  useEffect(() => {
+    if (form?.slug) setSlug(form.slug);
+  }, [form?.slug]);
 
   const currentVibe: VibeTokens = form?.vibeTokens
     ? typeof form.vibeTokens === "string"
@@ -57,6 +62,28 @@ export default function BuilderClient({
         queryClient.invalidateQueries(trpc.form.get.queryFilter({ id: formId }));
       },
       onError: (err) => toast.error(err.message || "Failed to update vibe"),
+    }),
+  );
+
+  const statusMutation = useMutation(
+    trpc.form.setStatus.mutationOptions({
+      onSuccess: (updated) => {
+        toast.success(updated.status === "published" ? "Form published!" : `Form marked ${updated.status}.`);
+        queryClient.invalidateQueries(trpc.form.get.queryFilter({ id: formId }));
+        queryClient.invalidateQueries(trpc.form.list.queryFilter());
+      },
+      onError: (err) => toast.error(err.message || "Failed to update form status"),
+    }),
+  );
+
+  const updateFormMutation = useMutation(
+    trpc.form.update.mutationOptions({
+      onSuccess: () => {
+        toast.success("Form details updated!");
+        queryClient.invalidateQueries(trpc.form.get.queryFilter({ id: formId }));
+        queryClient.invalidateQueries(trpc.form.list.queryFilter());
+      },
+      onError: (err) => toast.error(err.message || "Failed to update form details"),
     }),
   );
 
@@ -202,6 +229,34 @@ export default function BuilderClient({
             >
               Public Link ↗
             </Link>
+          )}
+          {form.status === "draft" && (
+            <Button
+              size="sm"
+              onClick={() => statusMutation.mutate({ id: formId, status: "published" })}
+              disabled={statusMutation.isPending}
+            >
+              {statusMutation.isPending ? "Publishing..." : "Publish"}
+            </Button>
+          )}
+          {form.status === "published" && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => statusMutation.mutate({ id: formId, status: "closed" })}
+              disabled={statusMutation.isPending}
+            >
+              Close form
+            </Button>
+          )}
+          {form.status === "closed" && (
+            <Button
+              size="sm"
+              onClick={() => statusMutation.mutate({ id: formId, status: "published" })}
+              disabled={statusMutation.isPending}
+            >
+              Reopen form
+            </Button>
           )}
         </div>
       </div>
@@ -436,7 +491,27 @@ export default function BuilderClient({
               <CardContent className="space-y-3 text-sm">
                 <div>
                   <span className="text-muted-foreground text-xs block">Public Slug:</span>
-                  <span className="font-mono text-xs">/f/{form.slug}</span>
+                  <form
+                    className="flex items-center gap-2 mt-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      updateFormMutation.mutate({ id: formId, slug });
+                    }}
+                  >
+                    <span className="font-mono text-xs">/f/</span>
+                    <Input
+                      value={slug}
+                      onChange={(event) => setSlug(event.target.value)}
+                      className="h-8 font-mono text-xs"
+                      pattern="[a-z0-9-]+"
+                      minLength={3}
+                      maxLength={64}
+                      aria-label="Public slug"
+                    />
+                    <Button type="submit" size="sm" variant="outline" disabled={updateFormMutation.isPending}>
+                      Save
+                    </Button>
+                  </form>
                 </div>
                 <div>
                   <span className="text-muted-foreground text-xs block">Created At:</span>

@@ -146,6 +146,12 @@ export function validateAnswerValue(
         return { valid: false, error: "Must be a list of selections." };
       }
       const c = config as MultipleChoiceConfig;
+      if (value.some((item) => typeof item !== "string")) {
+        return { valid: false, error: "Selections must be text values." };
+      }
+      if (new Set(value).size !== value.length) {
+        return { valid: false, error: "Selections must be unique." };
+      }
       if (c.minSelections !== undefined && value.length < c.minSelections) {
         return { valid: false, error: `Select at least ${c.minSelections} options.` };
       }
@@ -172,6 +178,13 @@ export function validateAnswerValue(
     case "date": {
       if (typeof value !== "string" || isNaN(Date.parse(value))) {
         return { valid: false, error: "Must be a valid date format." };
+      }
+      const c = config as DateConfig;
+      if (c.minDate && value < c.minDate) {
+        return { valid: false, error: `Date must be on or after ${c.minDate}.` };
+      }
+      if (c.maxDate && value > c.maxDate) {
+        return { valid: false, error: `Date must be on or before ${c.maxDate}.` };
       }
       return { valid: true };
     }
