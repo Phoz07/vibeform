@@ -16,7 +16,35 @@ type RpcRequest = {
 	params?: Record<string, unknown>;
 };
 
+const RpcRequestSchema = z.object({
+	jsonrpc: z.literal("2.0"),
+	id: z.union([z.string(), z.number(), z.null()]).optional(),
+	method: z.string().min(1),
+	params: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
+const ToolCallParamsSchema = z.object({
+	name: z.string().min(1),
+	arguments: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
 const app = new Hono<{ Bindings: Bindings }>();
+
+const securityHeaders = {
+	"Content-Security-Policy":
+		"default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+	"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+	"X-Content-Type-Options": "nosniff",
+	"Referrer-Policy": "strict-origin-when-cross-origin",
+	"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
+app.use("*", async (c, next) => {
+	await next();
+	for (const [name, value] of Object.entries(securityHeaders)) {
+		c.header(name, value);
+	}
+});
 
 const allowedOrigins = new Set([
 	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
@@ -133,6 +161,8 @@ const toolDefinitions = [
 		},
 	},
 ];
+
+const toolNames = new Set(toolDefinitions.map((tool) => tool.name));
 
 function rpcError(id: RpcRequest["id"], code: number, message: string) {
 	return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
@@ -372,7 +402,12 @@ async function callTool(
 }
 
 app.post("/mcp", async (c) => {
-	const request = (await c.req.json()) as RpcRequest;
+	let request: RpcRequest;
+	try {
+		request = RpcRequestSchema.parse(await c.req.json());
+	} catch {
+		return c.json(rpcError(null, -32600, "Invalid Request"));
+	}
 	const auth = await authenticate(c);
 	if (!auth) return c.json(rpcError(request.id, -32001, "Unauthorized"), 401);
 	if (request.method === "initialize") {
@@ -394,8 +429,12 @@ app.post("/mcp", async (c) => {
 			result: { tools: toolDefinitions },
 		});
 	if (request.method === "tools/call") {
-		const name = z.string().parse(request.params?.name);
-		const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
+		const parsedParams = ToolCallParamsSchema.safeParse(request.params);
+		if (!parsedParams.success || !toolNames.has(parsedParams.data.name)) {
+			return c.json(rpcError(request.id, -32602, "Invalid tool call"));
+		}
+		const name = parsedParams.data.name;
+		const args = parsedParams.data.arguments ?? {};
 		try {
 			const result = await callTool(
 				createDefinitionsDb(c.env),
@@ -427,7 +466,7 @@ app.post("/mcp", async (c) => {
 			});
 		}
 	}
-	return c.json(rpcError(request.id, -32601, "Method not found"), 404);
+	return c.json(rpcError(request.id, -32601, "Method not found"));
 });
 
 app.get("/mcp", async (c) => {

@@ -37,6 +37,15 @@ async function getIdentifyUser() {
 
 const app = new Hono<EvlogVariables>();
 
+const securityHeaders = {
+	"Content-Security-Policy":
+		"default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+	"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+	"X-Content-Type-Options": "nosniff",
+	"Referrer-Policy": "strict-origin-when-cross-origin",
+	"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
 const allowedOrigins = new Set([
 	"https://vibeform-web-live-phos-yzh42clevvg333kg.maverxk07.workers.dev",
 	"http://localhost:3000",
@@ -44,6 +53,12 @@ const allowedOrigins = new Set([
 ]);
 
 app.use(evlog());
+app.use("*", async (c, next) => {
+	await next();
+	for (const [name, value] of Object.entries(securityHeaders)) {
+		c.header(name, value);
+	}
+});
 app.use("*", async (c, next) => {
 	const middleware = await getIdentifyUser();
 	await middleware(c.get("log"), c.req.raw.headers, c.req.path);
