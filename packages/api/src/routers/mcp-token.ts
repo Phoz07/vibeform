@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { protectedProcedure, router } from "../index";
+import { protectedProcedure, router } from "../trpc";
 import { generateMcpToken, hashMcpToken } from "../utils/mcp-token";
 
 export const mcpTokenRouter = router({
@@ -41,8 +41,7 @@ export const mcpTokenRouter = router({
 					name: input.name,
 					tokenHash: await hashMcpToken(token),
 					scopes: [input.scope],
-					expiresAt:
-						input.expiresAt == null ? null : new Date(input.expiresAt),
+					expiresAt: input.expiresAt == null ? null : new Date(input.expiresAt),
 				})
 				.returning({
 					id: definitionsSchema.mcpTokens.id,

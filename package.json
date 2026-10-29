@@ -12,6 +12,7 @@
     "check-types": "vp run -r check-types",
     "check": "biome check --write .",
     "lint": "vp lint",
+    "test": "vitest run",
     "format": "vp fmt",
     "staged": "vp staged",
     "hooks:setup": "vp config",
@@ -34,7 +35,8 @@
     "rolldown": "1.2.15",
     "typescript": "catalog:",
     "varlock": "catalog:",
-    "vite-plus": "1.4.0"
+    "vite-plus": "1.4.0",
+    "vitest": "^5.0.5"
   },
   "packageManager": "pnpm@12.16.1"
 }
