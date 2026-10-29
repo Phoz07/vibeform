@@ -366,4 +366,37 @@ export const formRouter = router({
 
       return updated;
     }),
+
+  setStatus: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        status: z.enum(["draft", "published", "closed"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { definitionsSchema } = await import("@vibeform/db");
+
+      const [form] = await ctx.definitionsDb
+        .select()
+        .from(definitionsSchema.forms)
+        .where(
+          and(
+            eq(definitionsSchema.forms.id, input.id),
+            eq(definitionsSchema.forms.ownerId, ctx.session.user.id),
+          ),
+        );
+
+      if (!form) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
+      }
+
+      const [updated] = await ctx.definitionsDb
+        .update(definitionsSchema.forms)
+        .set({ status: input.status })
+        .where(eq(definitionsSchema.forms.id, input.id))
+        .returning();
+
+      return updated;
+    }),
 });

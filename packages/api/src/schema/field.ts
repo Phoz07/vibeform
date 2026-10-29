@@ -90,3 +90,97 @@ export function validateFieldConfig(type: FieldType, config: unknown) {
       return FileUploadConfigSchema.parse(config ?? {});
   }
 }
+
+export function validateAnswerValue(
+  type: FieldType,
+  configRaw: unknown,
+  value: unknown,
+  required: boolean,
+): { valid: boolean; error?: string } {
+  // Empty check
+  const isEmpty =
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (Array.isArray(value) && value.length === 0);
+
+  if (required && isEmpty) {
+    return { valid: false, error: "This question is required." };
+  }
+
+  if (isEmpty) {
+    return { valid: true };
+  }
+
+  const config = validateFieldConfig(type, configRaw);
+
+  switch (type) {
+    case "short_text":
+    case "long_text": {
+      if (typeof value !== "string") {
+        return { valid: false, error: "Must be text." };
+      }
+      const c = config as ShortTextConfig;
+      if (c.minLength !== undefined && value.length < c.minLength) {
+        return { valid: false, error: `Must be at least ${c.minLength} characters.` };
+      }
+      if (c.maxLength !== undefined && value.length > c.maxLength) {
+        return { valid: false, error: `Must be no more than ${c.maxLength} characters.` };
+      }
+      return { valid: true };
+    }
+
+    case "single_choice": {
+      if (typeof value !== "string") {
+        return { valid: false, error: "Must select a valid option." };
+      }
+      const c = config as SingleChoiceConfig;
+      if (!c.allowOther && !c.options.includes(value)) {
+        return { valid: false, error: "Selected option is not in the allowed choices." };
+      }
+      return { valid: true };
+    }
+
+    case "multiple_choice": {
+      if (!Array.isArray(value)) {
+        return { valid: false, error: "Must be a list of selections." };
+      }
+      const c = config as MultipleChoiceConfig;
+      if (c.minSelections !== undefined && value.length < c.minSelections) {
+        return { valid: false, error: `Select at least ${c.minSelections} options.` };
+      }
+      if (c.maxSelections !== undefined && value.length > c.maxSelections) {
+        return { valid: false, error: `Select at most ${c.maxSelections} options.` };
+      }
+      for (const item of value) {
+        if (!c.options.includes(String(item))) {
+          return { valid: false, error: `Invalid choice: ${item}` };
+        }
+      }
+      return { valid: true };
+    }
+
+    case "rating": {
+      const num = Number(value);
+      const c = config as RatingConfig;
+      if (isNaN(num) || !Number.isInteger(num) || num < 1 || num > (c.maxRating || 5)) {
+        return { valid: false, error: `Rating must be between 1 and ${c.maxRating || 5}.` };
+      }
+      return { valid: true };
+    }
+
+    case "date": {
+      if (typeof value !== "string" || isNaN(Date.parse(value))) {
+        return { valid: false, error: "Must be a valid date format." };
+      }
+      return { valid: true };
+    }
+
+    case "file_upload": {
+      if (typeof value !== "string" && (typeof value !== "object" || !value)) {
+        return { valid: false, error: "Must provide a valid uploaded attachment reference." };
+      }
+      return { valid: true };
+    }
+  }
+}
