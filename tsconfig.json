@@ -1,0 +1,3 @@
+{
+  "extends": "@vibeform/config/tsconfig.base.json"
+}

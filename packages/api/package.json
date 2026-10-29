@@ -1,0 +1,22 @@
+{
+  "name": "@vibeform/api",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@trpc/client": "catalog:",
+    "@trpc/server": "catalog:",
+    "@vibeform/auth": "workspace:*",
+    "@vibeform/db": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@vibeform/config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}
